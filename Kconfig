@@ -58,8 +58,6 @@ config PMW3610_SCROLL_TICK
 config PMW3610_ADJUSTABLE_MOUSESPEED
     bool "Enable Adujutable mouse speed"
     default n
-    help
-      Enable adjustable mouse speed.
 
 choice
     prompt "Select PMW3610's polling rate"
@@ -164,6 +162,10 @@ config PMW3610_INVERT_SCROLL_Y
 config PMW3610_AUTOMOUSE_TIMEOUT_MS
   int "Amount of milliseconds the mouse layer will be active after using the trackball"
   default 400
+
+config PMW3610_AUTOMOUSE_PIXEL_THRESHOLD
+  int "Pixel threshold for switch to mouse layer"
+  default 50
 
 module = PMW3610
 module-str = PMW3610
