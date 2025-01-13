@@ -577,6 +577,11 @@ static enum pixart_input_mode get_input_mode_for_current_layer(const struct devi
     return MOVE;
 }
 
+
+// AUTOMOUSE_LAYER有効時にマウスレイヤーの有効を精密に判定するためのグローバル変数
+static int16_t g_movement_accumulator = 0;
+static int64_t g_last_movement_time = 0;
+
 static int pmw3610_report_data(const struct device *dev) {
     struct pixart_data *data = dev->data;
     uint8_t buf[PMW3610_BURST_SIZE];
@@ -653,10 +658,26 @@ static int pmw3610_report_data(const struct device *dev) {
 
     if (input_mode == MOVE) {
         const int16_t movement_size = abs(x) + abs(y);
-        if (movement_size > MOVEMENT_THRESHOLD &&
+
+        int64_t current_time = k_uptime_get();
+        // 前回の有効な動きからの経過時間を計算
+        int64_t time_since_last_movement = current_time - g_last_movement_time;
+        // 移動量を累積
+        g_movement_accumulator += movement_size;
+
+        if (time_since_last_movement > 100 &&
+            g_movement_accumulator > MOVEMENT_THRESHOLD &&
             (automouse_triggered || zmk_keymap_highest_layer_active() != AUTOMOUSE_LAYER)
         ) {
             activate_automouse_layer();
+            g_last_movement_time = current_time;
+            g_movement_accumulator = 0;
+        }
+
+        // 一定時間経過後は累積値をリセット
+        if (time_since_last_movement >= 100) {
+            g_last_movement_time = current_time;
+            g_movement_accumulator = 0;
         }
     }
 #endif
