@@ -617,6 +617,9 @@ static int pmw3610_report_data(const struct device *dev) {
 
     data->curr_mode = input_mode;
 
+    int16_t x;
+    int16_t y;
+
     int err = motion_burst_read(dev, buf, sizeof(buf));
     if (err) {
         return err;
@@ -626,9 +629,6 @@ static int pmw3610_report_data(const struct device *dev) {
         TOINT16((buf[PMW3610_X_L_POS] + ((buf[PMW3610_XY_H_POS] & 0xF0) << 4)), 12) / dividor;
     int16_t raw_y =
         TOINT16((buf[PMW3610_Y_L_POS] + ((buf[PMW3610_XY_H_POS] & 0x0F) << 8)), 12) / dividor;
-
-    int16_t x;
-    int16_t y;
 
     if (IS_ENABLED(CONFIG_PMW3610_ORIENTATION_0)) {
         x = -raw_x;
@@ -652,33 +652,41 @@ static int pmw3610_report_data(const struct device *dev) {
         y = -y;
     }
 
+// #if AUTOMOUSE_LAYER > 0
+//     // 利用側のCPI設定値に依存せずに、 PMW3610_AUTOMOUSE_PIXEL_THRESHOLD で設定したピクセル相当の移動を検出するための閾値を計算
+//     static const int16_t MOVEMENT_THRESHOLD = ceil(CONFIG_PMW3610_AUTOMOUSE_PIXEL_THRESHOLD / CONFIG_PMW3610_CPI / CONFIG_PMW3610_CPI_DIVIDOR * 1000);
+
+//     if (input_mode == MOVE) {
+//         const int16_t movement_size = abs(x) + abs(y);
+
+//         int64_t current_time = k_uptime_get();
+//         // 前回の有効な動きからの経過時間を計算
+//         int64_t time_since_last_movement = current_time - g_last_movement_time;
+//         // 移動量を累積
+//         g_movement_accumulator += movement_size;
+
+//         if (time_since_last_movement > 100 &&
+//             g_movement_accumulator > MOVEMENT_THRESHOLD &&
+//             (automouse_triggered || zmk_keymap_highest_layer_active() != AUTOMOUSE_LAYER)
+//         ) {
+//             activate_automouse_layer();
+//             g_last_movement_time = current_time;
+//             g_movement_accumulator = 0;
+//         }
+
+//         // 一定時間経過後は累積値をリセット
+//         if (time_since_last_movement >= 100) {
+//             g_last_movement_time = current_time;
+//             g_movement_accumulator = 0;
+//         }
+//     }
+// #endif
 #if AUTOMOUSE_LAYER > 0
-    // 利用側のCPI設定値に依存せずに、 PMW3610_AUTOMOUSE_PIXEL_THRESHOLD で設定したピクセル相当の移動を検出するための閾値を計算
-    static const int16_t MOVEMENT_THRESHOLD = ceil(CONFIG_PMW3610_AUTOMOUSE_PIXEL_THRESHOLD / CONFIG_PMW3610_CPI / CONFIG_PMW3610_CPI_DIVIDOR * 1000);
-
-    if (input_mode == MOVE) {
-        const int16_t movement_size = abs(x) + abs(y);
-
-        int64_t current_time = k_uptime_get();
-        // 前回の有効な動きからの経過時間を計算
-        int64_t time_since_last_movement = current_time - g_last_movement_time;
-        // 移動量を累積
-        g_movement_accumulator += movement_size;
-
-        if (time_since_last_movement > 100 &&
-            g_movement_accumulator > MOVEMENT_THRESHOLD &&
-            (automouse_triggered || zmk_keymap_highest_layer_active() != AUTOMOUSE_LAYER)
-        ) {
-            activate_automouse_layer();
-            g_last_movement_time = current_time;
-            g_movement_accumulator = 0;
-        }
-
-        // 一定時間経過後は累積値をリセット
-        if (time_since_last_movement >= 100) {
-            g_last_movement_time = current_time;
-            g_movement_accumulator = 0;
-        }
+    if (input_mode == MOVE &&
+        (automouse_triggered || zmk_keymap_highest_layer_active() != AUTOMOUSE_LAYER) &&
+        (abs(x) + abs(y) > CONFIG_PMW3610_MOVEMENT_THRESHOLD)
+    ) {
+        activate_automouse_layer();
     }
 #endif
 
@@ -741,6 +749,15 @@ static int pmw3610_report_data(const struct device *dev) {
 
     if (x != 0 || y != 0) {
         if (input_mode != SCROLL) {
+#if AUTOMOUSE_LAYER > 0
+            // トラックボールの動きの大きさを計算
+            int16_t movement_size = abs(x) + abs(y);
+            if (input_mode == MOVE &&
+                (automouse_triggered || zmk_keymap_highest_layer_active() != AUTOMOUSE_LAYER) &&
+                movement_size > CONFIG_PMW3610_MOVEMENT_THRESHOLD) {
+                activate_automouse_layer();
+            }
+#endif
             input_report_rel(dev, INPUT_REL_X, x, false, K_FOREVER);
             input_report_rel(dev, INPUT_REL_Y, y, true, K_FOREVER);
         } else {
