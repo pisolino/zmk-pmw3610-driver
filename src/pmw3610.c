@@ -652,43 +652,44 @@ static int pmw3610_report_data(const struct device *dev) {
         y = -y;
     }
 
-// #if AUTOMOUSE_LAYER > 0
-//     // 利用側のCPI設定値に依存せずに、 PMW3610_AUTOMOUSE_PIXEL_THRESHOLD で設定したピクセル相当の移動を検出するための閾値を計算
-//     static const int16_t MOVEMENT_THRESHOLD = ceil(CONFIG_PMW3610_AUTOMOUSE_PIXEL_THRESHOLD / CONFIG_PMW3610_CPI / CONFIG_PMW3610_CPI_DIVIDOR * 1000);
-
-//     if (input_mode == MOVE) {
-//         const int16_t movement_size = abs(x) + abs(y);
-
-//         int64_t current_time = k_uptime_get();
-//         // 前回の有効な動きからの経過時間を計算
-//         int64_t time_since_last_movement = current_time - g_last_movement_time;
-//         // 移動量を累積
-//         g_movement_accumulator += movement_size;
-
-//         if (time_since_last_movement > 100 &&
-//             g_movement_accumulator > MOVEMENT_THRESHOLD &&
-//             (automouse_triggered || zmk_keymap_highest_layer_active() != AUTOMOUSE_LAYER)
-//         ) {
-//             activate_automouse_layer();
-//             g_last_movement_time = current_time;
-//             g_movement_accumulator = 0;
-//         }
-
-//         // 一定時間経過後は累積値をリセット
-//         if (time_since_last_movement >= 100) {
-//             g_last_movement_time = current_time;
-//             g_movement_accumulator = 0;
-//         }
-//     }
-// #endif
 #if AUTOMOUSE_LAYER > 0
-    if (input_mode == MOVE &&
-        (automouse_triggered || zmk_keymap_highest_layer_active() != AUTOMOUSE_LAYER) &&
-        (abs(x) + abs(y) > CONFIG_PMW3610_MOVEMENT_THRESHOLD)
-    ) {
-        activate_automouse_layer();
+    // 利用側のCPI設定値に依存せずに、 PMW3610_AUTOMOUSE_PIXEL_THRESHOLD で設定したピクセル相当の移動を検出するための閾値を計算
+    // static const int16_t MOVEMENT_THRESHOLD = ceil(CONFIG_PMW3610_AUTOMOUSE_PIXEL_THRESHOLD / CONFIG_PMW3610_CPI / CONFIG_PMW3610_CPI_DIVIDOR * 1000);
+    static const int16_t MOVEMENT_THRESHOLD = CONFIG_PMW3610_MOVEMENT_THRESHOLD;
+
+    if (input_mode == MOVE) {
+        const int16_t movement_size = abs(x) + abs(y);
+
+        int64_t current_time = k_uptime_get();
+        // 前回の有効な動きからの経過時間を計算
+        int64_t time_since_last_movement = current_time - g_last_movement_time;
+        // 移動量を累積
+        g_movement_accumulator += movement_size;
+
+        if (time_since_last_movement > 100 &&
+            g_movement_accumulator > MOVEMENT_THRESHOLD &&
+            (automouse_triggered || zmk_keymap_highest_layer_active() != AUTOMOUSE_LAYER)
+        ) {
+            activate_automouse_layer();
+            g_last_movement_time = current_time;
+            g_movement_accumulator = 0;
+        }
+
+        // 一定時間経過後は累積値をリセット
+        if (time_since_last_movement >= 100) {
+            g_last_movement_time = current_time;
+            g_movement_accumulator = 0;
+        }
     }
 #endif
+// #if AUTOMOUSE_LAYER > 0
+//     if (input_mode == MOVE &&
+//         (automouse_triggered || zmk_keymap_highest_layer_active() != AUTOMOUSE_LAYER) &&
+//         (abs(x) + abs(y) > CONFIG_PMW3610_MOVEMENT_THRESHOLD)
+//     ) {
+//         activate_automouse_layer();
+//     }
+// #endif
 
 #ifdef CONFIG_PMW3610_SMART_ALGORITHM
     int16_t shutter =
@@ -749,15 +750,15 @@ static int pmw3610_report_data(const struct device *dev) {
 
     if (x != 0 || y != 0) {
         if (input_mode != SCROLL) {
-#if AUTOMOUSE_LAYER > 0
-            // トラックボールの動きの大きさを計算
-            int16_t movement_size = abs(x) + abs(y);
-            if (input_mode == MOVE &&
-                (automouse_triggered || zmk_keymap_highest_layer_active() != AUTOMOUSE_LAYER) &&
-                movement_size > CONFIG_PMW3610_MOVEMENT_THRESHOLD) {
-                activate_automouse_layer();
-            }
-#endif
+// #if AUTOMOUSE_LAYER > 0
+//             // トラックボールの動きの大きさを計算
+//             int16_t movement_size = abs(x) + abs(y);
+//             if (input_mode == MOVE &&
+//                 (automouse_triggered || zmk_keymap_highest_layer_active() != AUTOMOUSE_LAYER) &&
+//                 movement_size > CONFIG_PMW3610_MOVEMENT_THRESHOLD) {
+//                 activate_automouse_layer();
+//             }
+// #endif
             input_report_rel(dev, INPUT_REL_X, x, false, K_FOREVER);
             input_report_rel(dev, INPUT_REL_Y, y, true, K_FOREVER);
         } else {
