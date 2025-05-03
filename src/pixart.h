@@ -30,6 +30,7 @@ struct pixart_data {
     int64_t last_poll_time;
     int16_t last_x;
     int16_t last_y;
+    int16_t last_raw_movement;  // ポーリングレート制限時に生の動きの値を保持するための変数
 #endif
 
     // motion interrupt isr

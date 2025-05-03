@@ -581,6 +581,8 @@ static enum pixart_input_mode get_input_mode_for_current_layer(const struct devi
 // AUTOMOUSE_LAYER有効時にマウスレイヤーの有効を精密に判定するためのグローバル変数
 static int16_t g_movement_accumulator = 0;
 static int64_t g_last_movement_time = 0;
+// センサーの生の値を保存するための変数を追加
+static int16_t g_raw_movement_accumulator = 0;
 
 static int pmw3610_report_data(const struct device *dev) {
     struct pixart_data *data = dev->data;
@@ -630,6 +632,9 @@ static int pmw3610_report_data(const struct device *dev) {
     int16_t raw_y =
         TOINT16((buf[PMW3610_Y_L_POS] + ((buf[PMW3610_XY_H_POS] & 0x0F) << 8)), 12) / dividor;
 
+    // センサーからの生の動きの値を計算（変換前）
+    const int16_t raw_movement = abs(raw_x) + abs(raw_y);
+
     if (IS_ENABLED(CONFIG_PMW3610_ORIENTATION_0)) {
         x = -raw_x;
         y = raw_y;
@@ -656,6 +661,12 @@ static int pmw3610_report_data(const struct device *dev) {
     // 利用側のCPI設定値に依存せずに、 PMW3610_AUTOMOUSE_PIXEL_THRESHOLD で設定したピクセル相当の移動を検出するための閾値を計算
     // static const int16_t MOVEMENT_THRESHOLD = ceil(CONFIG_PMW3610_AUTOMOUSE_PIXEL_THRESHOLD / CONFIG_PMW3610_CPI / CONFIG_PMW3610_CPI_DIVIDOR * 1000);
     static const int16_t MOVEMENT_THRESHOLD = CONFIG_PMW3610_MOVEMENT_THRESHOLD;
+    static const int64_t ACCUMULATION_TIME_MS = CONFIG_PMW3610_MOVEMENT_ACCUMULATION_TIME_MS;
+    
+    // CPIに基づく調整係数を計算
+    static const float CPI_SCALING_FACTOR = 800.0f / CONFIG_PMW3610_CPI;
+    // CPI値が低いほど、raw_movementの閾値係数を小さくする（より敏感に）
+    static const int16_t RAW_THRESHOLD_MULTIPLIER = CPI_SCALING_FACTOR < 1.0f ? 2 : (int16_t)(2 * CPI_SCALING_FACTOR);
 
     if (input_mode == MOVE) {
         const int16_t movement_size = abs(x) + abs(y);
@@ -663,33 +674,38 @@ static int pmw3610_report_data(const struct device *dev) {
         int64_t current_time = k_uptime_get();
         // 前回の有効な動きからの経過時間を計算
         int64_t time_since_last_movement = current_time - g_last_movement_time;
-        // 移動量を累積
+        
+        // 移動量を累積（通常の処理後の値と生の値の両方を累積）
         g_movement_accumulator += movement_size;
+        g_raw_movement_accumulator += raw_movement;
 
-        if (time_since_last_movement > 100 &&
-            g_movement_accumulator > MOVEMENT_THRESHOLD &&
-            (automouse_triggered || zmk_keymap_highest_layer_active() != AUTOMOUSE_LAYER)
-        ) {
-            activate_automouse_layer();
+        // トラックボールの動きに関するデバッグ情報をログに出力
+        /* if (raw_movement > 0 || movement_size > 0) {
+            LOG_INF("Movement: processed=%d, raw=%d, acc=%d, raw_acc=%d, threshold=%d, raw_mult=%d", 
+                    movement_size, raw_movement, g_movement_accumulator, 
+                    g_raw_movement_accumulator, MOVEMENT_THRESHOLD, RAW_THRESHOLD_MULTIPLIER);
+        } */
+
+        // 指定時間が経過したらチェックとリセットを行う
+        if (time_since_last_movement >= ACCUMULATION_TIME_MS) {
+            // 通常の閾値チェックか生の動き値のチェックのどちらかで条件を満たせばレイヤーをアクティブにする
+            if ((g_movement_accumulator > MOVEMENT_THRESHOLD || 
+                 g_raw_movement_accumulator > MOVEMENT_THRESHOLD * RAW_THRESHOLD_MULTIPLIER) &&
+                (automouse_triggered || zmk_keymap_highest_layer_active() != AUTOMOUSE_LAYER)) {
+                activate_automouse_layer();
+                
+                /* LOG_INF("Activating mouse layer: acc=%d, raw_acc=%d, thresh=%d, raw_thresh=%d", 
+                        g_movement_accumulator, g_raw_movement_accumulator, 
+                        MOVEMENT_THRESHOLD, MOVEMENT_THRESHOLD * RAW_THRESHOLD_MULTIPLIER); */
+            }
+            
+            // 累積値をリセット
             g_last_movement_time = current_time;
             g_movement_accumulator = 0;
-        }
-
-        // 一定時間経過後は累積値をリセット
-        if (time_since_last_movement >= 100) {
-            g_last_movement_time = current_time;
-            g_movement_accumulator = 0;
+            g_raw_movement_accumulator = 0;
         }
     }
 #endif
-// #if AUTOMOUSE_LAYER > 0
-//     if (input_mode == MOVE &&
-//         (automouse_triggered || zmk_keymap_highest_layer_active() != AUTOMOUSE_LAYER) &&
-//         (abs(x) + abs(y) > CONFIG_PMW3610_MOVEMENT_THRESHOLD)
-//     ) {
-//         activate_automouse_layer();
-//     }
-// #endif
 
 #ifdef CONFIG_PMW3610_SMART_ALGORITHM
     int16_t shutter =
@@ -738,27 +754,36 @@ static int pmw3610_report_data(const struct device *dev) {
         data->last_poll_time = curr_time;
         data->last_x = x;
         data->last_y = y;
+        
+        // ポーリングレート制限時にも生の動きを累積するために保存
+#if AUTOMOUSE_LAYER > 0
+        if (input_mode == MOVE) {
+            // 次回の呼び出し時まで生の動きの累積値を保持
+            data->last_raw_movement = raw_movement;
+        }
+#endif
+        
         return 0;
     } else {
         x += data->last_x;
         y += data->last_y;
+        
+#if AUTOMOUSE_LAYER > 0
+        if (input_mode == MOVE) {
+            // 保存していた生の動きの値を現在の累積値に加算
+            g_raw_movement_accumulator += data->last_raw_movement;
+        }
+#endif
+        
         data->last_poll_time = 0;
         data->last_x = 0;
         data->last_y = 0;
+        data->last_raw_movement = 0;
     }
 #endif
 
     if (x != 0 || y != 0) {
         if (input_mode != SCROLL) {
-// #if AUTOMOUSE_LAYER > 0
-//             // トラックボールの動きの大きさを計算
-//             int16_t movement_size = abs(x) + abs(y);
-//             if (input_mode == MOVE &&
-//                 (automouse_triggered || zmk_keymap_highest_layer_active() != AUTOMOUSE_LAYER) &&
-//                 movement_size > CONFIG_PMW3610_MOVEMENT_THRESHOLD) {
-//                 activate_automouse_layer();
-//             }
-// #endif
             input_report_rel(dev, INPUT_REL_X, x, false, K_FOREVER);
             input_report_rel(dev, INPUT_REL_Y, y, true, K_FOREVER);
         } else {

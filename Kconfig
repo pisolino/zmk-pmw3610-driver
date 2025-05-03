@@ -175,6 +175,14 @@ config PMW3610_MOVEMENT_THRESHOLD
         A higher value means more movement is required to activate the mouse layer.
         This helps prevent accidental activation during typing.
 
+config PMW3610_MOVEMENT_ACCUMULATION_TIME_MS
+    int "Time window in milliseconds for accumulating trackball movement"
+    default 100
+    help
+        The time window in milliseconds during which trackball movement is accumulated
+        before comparing to the threshold. Longer times allow for slower movements
+        to trigger the mouse layer.
+
 module = PMW3610
 module-str = PMW3610
 source "${ZEPHYR_BASE}/subsys/logging/Kconfig.template.log_config"
