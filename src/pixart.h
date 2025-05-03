@@ -15,7 +15,15 @@
 extern "C" {
 #endif
 
-enum pixart_input_mode { MOVE = 0, SCROLL, SNIPE };
+enum pixart_input_mode { 
+    MOVE = 0,      // 通常の移動モード
+    SCROLL,        // スクロールモード
+    SNIPE,         // 精密狙いモード
+#ifdef CONFIG_PMW3610_PROFILE_SWITCHING
+    PRECISION,     // 精密作業プロファイル
+    SPEED          // 高速移動プロファイル
+#endif
+};
 
 /* device data structure */
 struct pixart_data {
@@ -37,6 +45,13 @@ struct pixart_data {
     // 平滑化フィルター用の前回の値を保持する変数
     int16_t prev_x;
     int16_t prev_y;
+    uint8_t current_smoothing_weight; // 現在のスムージング係数
+#endif
+
+#ifdef CONFIG_PMW3610_PROFILE_SWITCHING
+    bool precision_profile_active;
+    bool speed_profile_active;
+    uint32_t backup_cpi; // 元のCPI値を保存
 #endif
 
     // motion interrupt isr

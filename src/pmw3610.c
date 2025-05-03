@@ -661,7 +661,7 @@ static int pmw3610_report_data(const struct device *dev) {
     // 平滑化フィルターの適用
     if (data->ready) { // 初期化後のみ適用
         // スムージングの重み付け係数 (0-90%)
-        const float weight = CONFIG_PMW3610_SMOOTHING_WEIGHT / 100.0f;
+        const float weight = data->current_smoothing_weight / 100.0f;
         
         // CPIに基づく調整係数を計算（800dpiを基準）
         float cpi_factor = 800.0f / CONFIG_PMW3610_CPI;
@@ -932,6 +932,14 @@ static int pmw3610_init(const struct device *dev) {
     // 平滑化フィルター用の変数を初期化
     data->prev_x = 0;
     data->prev_y = 0;
+    data->current_smoothing_weight = CONFIG_PMW3610_SMOOTHING_WEIGHT;
+#endif
+
+#ifdef CONFIG_PMW3610_PROFILE_SWITCHING
+    // プロファイル状態を初期化
+    data->precision_profile_active = false;
+    data->speed_profile_active = false;
+    data->backup_cpi = CONFIG_PMW3610_CPI;
 #endif
 
     // init trigger handler work
@@ -995,3 +1003,147 @@ static int pmw3610_init(const struct device *dev) {
                           CONFIG_SENSOR_INIT_PRIORITY, NULL);
 
 DT_INST_FOREACH_STATUS_OKAY(PMW3610_DEFINE)
+
+#ifdef CONFIG_PMW3610_PROFILE_SWITCHING
+/**
+ * @brief 精密作業プロファイルを有効/無効化する関数
+ * 
+ * @param dev デバイス
+ * @param enable 有効化するかどうか
+ * @return int 成功時は0、エラー時は負の値
+ */
+static int set_precision_profile(const struct device *dev, bool enable) {
+    struct pixart_data *data = dev->data;
+    int err = 0;
+
+    if (enable && !data->precision_profile_active) {
+        // 現在のCPI値をバックアップ
+        if (!data->speed_profile_active) {
+            data->backup_cpi = data->curr_cpi;
+        }
+
+        // 精密プロファイル用のCPI値に設定
+        err = set_cpi(dev, CONFIG_PMW3610_PRECISION_PROFILE_CPI);
+        if (err) {
+            LOG_ERR("Failed to set precision profile CPI");
+            return err;
+        }
+
+#ifdef CONFIG_PMW3610_SMOOTHING_FILTER
+        // 精密プロファイル用のスムージング値に変更
+        data->current_smoothing_weight = CONFIG_PMW3610_PRECISION_PROFILE_SMOOTHING;
+#endif
+
+        data->precision_profile_active = true;
+        data->speed_profile_active = false;
+        LOG_DBG("Precision profile activated");
+    } else if (!enable && data->precision_profile_active) {
+        // バックアップしたCPI値に戻す
+        err = set_cpi(dev, data->backup_cpi);
+        if (err) {
+            LOG_ERR("Failed to restore CPI setting");
+            return err;
+        }
+
+#ifdef CONFIG_PMW3610_SMOOTHING_FILTER
+        // 通常のスムージング値に戻す
+        data->current_smoothing_weight = CONFIG_PMW3610_SMOOTHING_WEIGHT;
+#endif
+
+        data->precision_profile_active = false;
+        LOG_DBG("Precision profile deactivated");
+    }
+
+    return err;
+}
+
+/**
+ * @brief 高速移動プロファイルを有効/無効化する関数
+ * 
+ * @param dev デバイス
+ * @param enable 有効化するかどうか
+ * @return int 成功時は0、エラー時は負の値
+ */
+static int set_speed_profile(const struct device *dev, bool enable) {
+    struct pixart_data *data = dev->data;
+    int err = 0;
+
+    if (enable && !data->speed_profile_active) {
+        // 現在のCPI値をバックアップ
+        if (!data->precision_profile_active) {
+            data->backup_cpi = data->curr_cpi;
+        }
+
+        // 高速プロファイル用のCPI値に設定
+        err = set_cpi(dev, CONFIG_PMW3610_SPEED_PROFILE_CPI);
+        if (err) {
+            LOG_ERR("Failed to set speed profile CPI");
+            return err;
+        }
+
+#ifdef CONFIG_PMW3610_SMOOTHING_FILTER
+        // 高速プロファイル用のスムージング値に変更
+        data->current_smoothing_weight = CONFIG_PMW3610_SPEED_PROFILE_SMOOTHING;
+#endif
+
+        data->speed_profile_active = true;
+        data->precision_profile_active = false;
+        LOG_DBG("Speed profile activated");
+    } else if (!enable && data->speed_profile_active) {
+        // バックアップしたCPI値に戻す
+        err = set_cpi(dev, data->backup_cpi);
+        if (err) {
+            LOG_ERR("Failed to restore CPI setting");
+            return err;
+        }
+
+#ifdef CONFIG_PMW3610_SMOOTHING_FILTER
+        // 通常のスムージング値に戻す
+        data->current_smoothing_weight = CONFIG_PMW3610_SMOOTHING_WEIGHT;
+#endif
+
+        data->speed_profile_active = false;
+        LOG_DBG("Speed profile deactivated");
+    }
+
+    return err;
+}
+
+/**
+ * @brief 精密作業プロファイルを有効/無効化する公開API関数
+ * 
+ * ZMKのビヘイビアからこの関数を呼び出すことで、キーを押している間だけ精密プロファイルに切り替えられる
+ * 
+ * @param enable 有効化するかどうか
+ * @return int 成功時は0、エラー時は負の値
+ */
+int pmw3610_activate_precision_profile(bool enable) {
+    // PMW3610センサーのデバイスを取得
+    const struct device *dev = DEVICE_DT_GET(DT_INST(0, pixart_pmw3610));
+    
+    if (!device_is_ready(dev)) {
+        return -ENODEV;
+    }
+    
+    return set_precision_profile(dev, enable);
+}
+
+/**
+ * @brief 高速移動プロファイルを有効/無効化する公開API関数
+ * 
+ * ZMKのビヘイビアからこの関数を呼び出すことで、キーを押している間だけ高速プロファイルに切り替えられる
+ * 
+ * @param enable 有効化するかどうか
+ * @return int 成功時は0、エラー時は負の値
+ */
+int pmw3610_activate_speed_profile(bool enable) {
+    // PMW3610センサーのデバイスを取得
+    const struct device *dev = DEVICE_DT_GET(DT_INST(0, pixart_pmw3610));
+    
+    if (!device_is_ready(dev)) {
+        return -ENODEV;
+    }
+    
+    return set_speed_profile(dev, enable);
+}
+#endif

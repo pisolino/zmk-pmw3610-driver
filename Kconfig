@@ -202,6 +202,51 @@ config PMW3610_SMOOTHING_WEIGHT
         Range is 0-90 percent, with 0 effectively disabling smoothing
         and 90 applying maximum smoothing.
 
+menuconfig PMW3610_PROFILE_SWITCHING
+    bool "Enable mouse profile switching"
+    default n
+    help
+        Enables support for switching between different mouse profiles (precision, regular, speed)
+        triggered by keys or layers.
+
+if PMW3610_PROFILE_SWITCHING
+
+config PMW3610_PRECISION_PROFILE_CPI
+    int "CPI for precision profile"
+    default 200
+    range 200 3200
+    help
+        The CPI setting to use when in precision profile mode.
+        Lower values are better for precise movements.
+
+config PMW3610_PRECISION_PROFILE_SMOOTHING
+    int "Smoothing weight for precision profile"
+    default 70
+    range 0 90
+    depends on PMW3610_SMOOTHING_FILTER
+    help
+        The smoothing weight to apply in precision mode.
+        Higher values (60-80) recommended for precision work.
+
+config PMW3610_SPEED_PROFILE_CPI
+    int "CPI for speed profile"
+    default 1200
+    range 200 3200
+    help
+        The CPI setting to use when in speed profile mode.
+        Higher values are better for quick cursor movements.
+
+config PMW3610_SPEED_PROFILE_SMOOTHING
+    int "Smoothing weight for speed profile"
+    default 20
+    range 0 90
+    depends on PMW3610_SMOOTHING_FILTER
+    help
+        The smoothing weight to apply in speed mode.
+        Lower values (10-30) recommended for fast movements.
+
+endif # PMW3610_PROFILE_SWITCHING
+
 module = PMW3610
 module-str = PMW3610
 source "${ZEPHYR_BASE}/subsys/logging/Kconfig.template.log_config"
