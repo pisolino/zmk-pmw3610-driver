@@ -657,6 +657,61 @@ static int pmw3610_report_data(const struct device *dev) {
         y = -y;
     }
 
+#ifdef CONFIG_PMW3610_SMOOTHING_FILTER
+    // 平滑化フィルターの適用
+    if (data->ready) { // 初期化後のみ適用
+        // スムージングの重み付け係数 (0-90%)
+        const float weight = CONFIG_PMW3610_SMOOTHING_WEIGHT / 100.0f;
+        
+        // CPIに基づく調整係数を計算（800dpiを基準）
+        float cpi_factor = 800.0f / CONFIG_PMW3610_CPI;
+        
+        // 移動量の大きさに基づいて適応的に重みを調整
+        // 大きな動きには少ない重みを適用し、小さな動きには大きな重みを適用
+        int16_t movement_size = abs(x) + abs(y);
+        float adaptive_weight = weight;
+        
+        // CPIに応じて閾値を調整
+        int16_t large_movement_threshold = (int16_t)(20 * cpi_factor);
+        int16_t medium_movement_threshold = (int16_t)(10 * cpi_factor);
+        
+        if (movement_size > large_movement_threshold) {
+            // 大きな動きの場合は重みを下げる（より即応的に）
+            adaptive_weight = weight * 0.5f;
+        } else if (movement_size > medium_movement_threshold) {
+            // 中程度の動きの場合は重みを少し下げる
+            adaptive_weight = weight * 0.7f;
+        }
+        
+        // 初回の動きの場合は平滑化をスキップ
+        if (data->prev_x == 0 && data->prev_y == 0 && (x != 0 || y != 0)) {
+            // 値を記録するだけで平滑化はスキップ
+            data->prev_x = x;
+            data->prev_y = y;
+        } else {
+            // 指数移動平均を適用
+            int16_t smoothed_x = (int16_t)(adaptive_weight * data->prev_x + (1.0f - adaptive_weight) * x);
+            int16_t smoothed_y = (int16_t)(adaptive_weight * data->prev_y + (1.0f - adaptive_weight) * y);
+            
+            // 非常に小さな動きはノイズと見なして抑制
+            if (abs(x) <= 1 && abs(data->prev_x) <= 1) {
+                smoothed_x = 0;
+            }
+            if (abs(y) <= 1 && abs(data->prev_y) <= 1) {
+                smoothed_y = 0;
+            }
+            
+            // 前回の値を更新
+            data->prev_x = x;
+            data->prev_y = y;
+            
+            // 平滑化された値で置き換え
+            x = smoothed_x;
+            y = smoothed_y;
+        }
+    }
+#endif
+
 #if AUTOMOUSE_LAYER > 0
     // 利用側のCPI設定値に依存せずに、 PMW3610_AUTOMOUSE_PIXEL_THRESHOLD で設定したピクセル相当の移動を検出するための閾値を計算
     // static const int16_t MOVEMENT_THRESHOLD = ceil(CONFIG_PMW3610_AUTOMOUSE_PIXEL_THRESHOLD / CONFIG_PMW3610_CPI / CONFIG_PMW3610_CPI_DIVIDOR * 1000);
@@ -872,6 +927,12 @@ static int pmw3610_init(const struct device *dev) {
 
     // init smart algorithm flag;
     data->sw_smart_flag = false;
+
+#ifdef CONFIG_PMW3610_SMOOTHING_FILTER
+    // 平滑化フィルター用の変数を初期化
+    data->prev_x = 0;
+    data->prev_y = 0;
+#endif
 
     // init trigger handler work
     k_work_init(&data->trigger_work, pmw3610_work_callback);

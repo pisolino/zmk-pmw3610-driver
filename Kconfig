@@ -183,6 +183,25 @@ config PMW3610_MOVEMENT_ACCUMULATION_TIME_MS
         before comparing to the threshold. Longer times allow for slower movements
         to trigger the mouse layer.
 
+config PMW3610_SMOOTHING_FILTER
+    bool "Enable movement smoothing filter"
+    default n
+    help
+        Enables a smoothing filter that reduces jitter and improves precision
+        for small movements while maintaining responsiveness for larger movements.
+
+config PMW3610_SMOOTHING_WEIGHT
+    int "Smoothing filter weight (percentage)"
+    depends on PMW3610_SMOOTHING_FILTER
+    default 40
+    range 0 90
+    help
+        The weight given to previous movement samples in the smoothing filter.
+        Higher values result in smoother cursor movement but may introduce lag.
+        Lower values make the cursor more responsive but may be less smooth.
+        Range is 0-90 percent, with 0 effectively disabling smoothing
+        and 90 applying maximum smoothing.
+
 module = PMW3610
 module-str = PMW3610
 source "${ZEPHYR_BASE}/subsys/logging/Kconfig.template.log_config"

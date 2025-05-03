@@ -33,6 +33,12 @@ struct pixart_data {
     int16_t last_raw_movement;  // ポーリングレート制限時に生の動きの値を保持するための変数
 #endif
 
+#ifdef CONFIG_PMW3610_SMOOTHING_FILTER
+    // 平滑化フィルター用の前回の値を保持する変数
+    int16_t prev_x;
+    int16_t prev_y;
+#endif
+
     // motion interrupt isr
     struct gpio_callback irq_gpio_cb;
     // the work structure holding the trigger job
