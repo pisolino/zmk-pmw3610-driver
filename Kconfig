@@ -64,13 +64,14 @@ config PMW3610_SNIPE_CPI_DIVIDOR
 
 config PMW3610_SCROLL_DIVIDOR
     int "PMW3610's scroll mode dividor"
-    default 6
+    default 2
     range 1 20
     help
       Dividor value for scroll mode. Higher values make scrolling less sensitive.
       Recommended values:
-      - Finger trackball: 4-6
-      - Thumb trackball: 6-10
+      - For more sensitive scrolling: 1-2
+      - For moderate sensitivity: 3-4
+      - For less sensitive scrolling: 5-8
 
 config PMW3610_SCROLL_TICK
     int "PMW3610's required ticks to produce a scroll report"
