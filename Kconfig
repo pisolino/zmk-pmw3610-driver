@@ -21,12 +21,25 @@ config PMW3610_SMART_ALGORITHM
     The algorithm is used to extend the tracking acrocss a wider range of surfaces
     such as graniles and tiles.
 
+config PMW3610_DPI_SCALING
+  bool "Enable an scaling of PMW3610 raw CPI value to TARGET_CPI value"
+  default n
+  help
+    Enable an scaling of PMW3610 raw CPI value to TARGET_CPI value.
+
 config PMW3610_CPI
     int "PMW3610's default CPI"
     default 800
     range 200 3200
     help
       Default CPI value, with 200 step
+
+config PMW3610_TARGET_CPI
+    int "PMW3610's scaling target CPI"
+    default 800
+    range 100 3100
+    help
+      Scaling CPI value, with 100 step
 
 config PMW3610_CPI_DIVIDOR
     int "PMW3610's default CPI dividor"

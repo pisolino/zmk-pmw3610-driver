@@ -850,7 +850,7 @@ static int pmw3610_report_data(const struct device *dev) {
         }
 
         // スケーリングを適用
-        if (current_dpi > 0) {
+        if (current_cpi > 0) {
             x = x * scaling_ratio;
             y = y * scaling_ratio;
         }
