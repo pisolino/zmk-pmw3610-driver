@@ -859,20 +859,64 @@ static int pmw3610_report_data(const struct device *dev) {
             input_report_rel(dev, INPUT_REL_X, x, false, K_FOREVER);
             input_report_rel(dev, INPUT_REL_Y, y, true, K_FOREVER);
         } else {
-            data->scroll_delta_x += x;
-            data->scroll_delta_y += y;
+            // Calculate scroll values
+            int16_t scroll_x = x;
+            int16_t scroll_y = y;
+            
+#ifdef CONFIG_PMW3610_ADJUSTABLE_SCROLLSPEED
+            // Apply adaptive scrolling based on movement speed
+            int16_t movement_size = abs(x) + abs(y);
+            int8_t scroll_lines = 1; // Default to 1 line of scrolling
+            
+            // Adjust scroll amount based on movement size
+            if (movement_size > 50) {
+                scroll_lines = 6; // Very fast scrolling
+            } else if (movement_size > 35) {
+                scroll_lines = 4; // Fast scrolling
+            } else if (movement_size > 20) {
+                scroll_lines = 3; // Medium-fast scrolling
+            } else if (movement_size > 10) {
+                scroll_lines = 2; // Slightly faster scrolling
+            }
+            
+            // Apply scroll_lines multiplier only when exceeding threshold
+            if (scroll_lines > 1) {
+                scroll_x *= scroll_lines;
+                scroll_y *= scroll_lines;
+            }
+#endif
+            
+            // Accumulate scroll delta
+            data->scroll_delta_x += scroll_x;
+            data->scroll_delta_y += scroll_y;
+            
+            // Generate scroll events when threshold is exceeded
             if (abs(data->scroll_delta_y) > CONFIG_PMW3610_SCROLL_TICK) {
-                input_report_rel(dev, INPUT_REL_WHEEL,
-                                 data->scroll_delta_y > 0 ? PMW3610_SCROLL_Y_NEGATIVE : PMW3610_SCROLL_Y_POSITIVE,
-                                 true, K_FOREVER);
-                data->scroll_delta_x = 0;
-                data->scroll_delta_y = 0;
+                // Calculate number of scroll events to generate
+                int16_t scroll_events = abs(data->scroll_delta_y) / CONFIG_PMW3610_SCROLL_TICK;
+                int16_t scroll_direction = data->scroll_delta_y > 0 ? PMW3610_SCROLL_Y_NEGATIVE : PMW3610_SCROLL_Y_POSITIVE;
+                
+                // Send multiple scroll events if needed
+                for (int i = 0; i < scroll_events; i++) {
+                    input_report_rel(dev, INPUT_REL_WHEEL, scroll_direction, true, K_FOREVER);
+                }
+                
+                // Keep remainder for next time
+                data->scroll_delta_y %= CONFIG_PMW3610_SCROLL_TICK;
+                data->scroll_delta_x = 0; // Reset horizontal scrolling after vertical scroll
             } else if (abs(data->scroll_delta_x) > CONFIG_PMW3610_SCROLL_TICK) {
-                input_report_rel(dev, INPUT_REL_HWHEEL,
-                                 data->scroll_delta_x > 0 ? PMW3610_SCROLL_X_NEGATIVE : PMW3610_SCROLL_X_POSITIVE,
-                                 true, K_FOREVER);
-                data->scroll_delta_x = 0;
-                data->scroll_delta_y = 0;
+                // Calculate number of scroll events to generate
+                int16_t scroll_events = abs(data->scroll_delta_x) / CONFIG_PMW3610_SCROLL_TICK;
+                int16_t scroll_direction = data->scroll_delta_x > 0 ? PMW3610_SCROLL_X_NEGATIVE : PMW3610_SCROLL_X_POSITIVE;
+                
+                // Send multiple scroll events if needed
+                for (int i = 0; i < scroll_events; i++) {
+                    input_report_rel(dev, INPUT_REL_HWHEEL, scroll_direction, true, K_FOREVER);
+                }
+                
+                // Keep remainder for next time
+                data->scroll_delta_x %= CONFIG_PMW3610_SCROLL_TICK;
+                data->scroll_delta_y = 0; // Reset vertical scrolling after horizontal scroll
             }
         }
     }

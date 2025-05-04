@@ -81,8 +81,18 @@ config PMW3610_SCROLL_TICK
       to generate a scroll event.
 
 config PMW3610_ADJUSTABLE_MOUSESPEED
-    bool "Enable Adujutable mouse speed"
+    bool "Enable Adjustable mouse speed"
     default n
+    help
+      Adjusts cursor speed based on movement size. Faster movements result in
+      higher speed multiplier, allowing for both precise and quick cursor control.
+
+config PMW3610_ADJUSTABLE_SCROLLSPEED
+    bool "Enable Adjustable scroll speed"
+    default n
+    help
+      Adjusts scroll speed based on trackball movement. Faster movements result in
+      exponentially faster scrolling, allowing for both precise and quick scrolling.
 
 choice
     prompt "Select PMW3610's polling rate"
