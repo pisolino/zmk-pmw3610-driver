@@ -866,17 +866,18 @@ static int pmw3610_report_data(const struct device *dev) {
 #ifdef CONFIG_PMW3610_ADJUSTABLE_SCROLLSPEED
             // Apply adaptive scrolling based on movement speed
             int16_t movement_size = abs(x) + abs(y);
-            int8_t scroll_lines = 2; // Default to 2 lines of scrolling
+            int8_t scroll_lines = 1; // Default to 1 line of scrolling
             
-            // Adjust scroll amount based on movement size
-            if (movement_size > 50) {
-                scroll_lines = 6; // Very fast scrolling
-            } else if (movement_size > 35) {
-                scroll_lines = 5; // Fast scrolling
-            } else if (movement_size > 20) {
-                scroll_lines = 4; // Medium-fast scrolling
-            } else if (movement_size > 10) {
-                scroll_lines = 3; // Slightly fastr scrolling
+            // Adjust scroll amount based on movement size with wider intervals
+            // for smoother acceleration curve that feels natural with trackballs
+            if (movement_size > 130) {
+                scroll_lines = 5; // Maximum scrolling speed for very fast movements
+            } else if (movement_size > 90) {
+                scroll_lines = 4; // Very fast scrolling
+            } else if (movement_size > 60) {
+                scroll_lines = 3; // Fast scrolling
+            } else if (movement_size > 30) {
+                scroll_lines = 2; // Medium-fast scrolling
             }
             
             // Apply scroll_lines multiplier only when exceeding threshold
