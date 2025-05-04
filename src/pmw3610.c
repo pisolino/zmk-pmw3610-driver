@@ -19,6 +19,8 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(pmw3610, CONFIG_INPUT_LOG_LEVEL);
 
+#include <zephyr/sys/util.h>
+
 //////// Sensor initialization steps definition //////////
 // init is done in non-blocking manner (i.e., async), a //
 // delayable work is defined for this purpose           //
@@ -838,6 +840,21 @@ static int pmw3610_report_data(const struct device *dev) {
 #endif
 
     if (x != 0 || y != 0) {
+        // if (input_mode == MOVE) {
+        uint32_t current_cpi = CONFIG_PMW3610_CPI;
+        uint32_t target_cpi = CONFIG_PMW3610_TARGET_CPI;
+        uint32_t scaling_ratio = 1;
+
+        if (IS_ENABLED(CONFIG_PMW3610_DPI_SCALING)) {
+            scaling_ratio = target_cpi / current_cpi;
+        }
+
+        // スケーリングを適用
+        if (current_dpi > 0) {
+            x = x * scaling_ratio;
+            y = y * scaling_ratio;
+        }
+        // }
         if (input_mode != SCROLL) {
             input_report_rel(dev, INPUT_REL_X, x, false, K_FOREVER);
             input_report_rel(dev, INPUT_REL_Y, y, true, K_FOREVER);
