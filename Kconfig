@@ -174,7 +174,11 @@ config PMW3610_INVERT_SCROLL_Y
 
 config PMW3610_AUTOMOUSE_TIMEOUT_MS
   int "Amount of milliseconds the mouse layer will be active after using the trackball"
-  default 400
+  default 500
+  help
+    Time in milliseconds the mouse layer remains active after the last detected movement.
+    Increasing this value gives more time to perform actions like clicking before the layer
+    is deactivated. Default is 500ms (increased from 400ms).
 
 config PMW3610_AUTOMOUSE_PIXEL_THRESHOLD
   int "Pixel threshold for switch to mouse layer"
@@ -195,6 +199,21 @@ config PMW3610_MOVEMENT_ACCUMULATION_TIME_MS
         The time window in milliseconds during which trackball movement is accumulated
         before comparing to the threshold. Longer times allow for slower movements
         to trigger the mouse layer.
+
+config PMW3610_INTENTIONAL_MOVEMENT_DETECTION
+    bool "Enable intentional movement pattern detection"
+    default y
+    help
+        Enables detection of intentional movement patterns to distinguish
+        between actual trackball usage and vibration-induced movement.
+        This helps balance immediate layer switching with vibration immunity.
+
+config PMW3610_MOVEMENT_TIMEOUT_EXTENSION
+    bool "Enable automatic extension of mouse layer timeout on continued movement"
+    default y
+    help
+        When enabled, the mouse layer will remain active as long as
+        there is continued movement, preventing premature deactivation.
 
 config PMW3610_SMOOTHING_FILTER
     bool "Enable movement smoothing filter"
