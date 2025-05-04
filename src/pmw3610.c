@@ -609,7 +609,7 @@ static int pmw3610_report_data(const struct device *dev) {
             data->scroll_delta_x = 0;
             data->scroll_delta_y = 0;
         }
-        dividor = 1; // this should be handled with the ticks rather than dividors
+        dividor = CONFIG_PMW3610_SCROLL_DIVIDOR; // スクロールモード専用のdividor値を使用
         break;
     case SNIPE:
         set_cpi_if_needed(dev, CONFIG_PMW3610_SNIPE_CPI);

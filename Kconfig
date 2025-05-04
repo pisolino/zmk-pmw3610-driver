@@ -62,11 +62,22 @@ config PMW3610_SNIPE_CPI_DIVIDOR
     help
       Snipe CPI dividor value.
 
+config PMW3610_SCROLL_DIVIDOR
+    int "PMW3610's scroll mode dividor"
+    default 6
+    range 1 20
+    help
+      Dividor value for scroll mode. Higher values make scrolling less sensitive.
+      Recommended values:
+      - Finger trackball: 4-6
+      - Thumb trackball: 6-10
+
 config PMW3610_SCROLL_TICK
     int "PMW3610's required ticks to produce a scroll report"
     default 20
     help
-      Scroll tick value.
+      Scroll tick value. Determines how much accumulated movement is needed
+      to generate a scroll event.
 
 config PMW3610_ADJUSTABLE_MOUSESPEED
     bool "Enable Adujutable mouse speed"
