@@ -15,6 +15,7 @@
 #include <zephyr/input/input.h>
 #include <zmk/keymap.h>
 #include "pmw3610.h"
+#include <math.h>
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(pmw3610, CONFIG_INPUT_LOG_LEVEL);
@@ -906,30 +907,64 @@ static int pmw3610_report_data(const struct device *dev) {
                     // 前回の動きから500ms以内の場合、加速を徐々に増加
                     data->scroll_consecutive_movements++;
                     
-                    // より線形な加速カーブのために毎回少しずつ加速度を上げる
-                    // ステップの概念を廃止し、常に少しずつ加速させることで滑らかさを実現
-                    if (data->scroll_consecutive_movements <= 5) {
-                        // 最初の数回は加速なし（1.0固定）
-                        data->scroll_acceleration = 1.0f;
-                    } else if (data->scroll_consecutive_movements <= 120) {
-                        // 6回目から120回目までは非常に緩やかな加速
-                        // 最大値の4.0に向けて非常に緩やかな線形加速を行う
-                        // (4.0 - 1.0) / (120 - 5) = 0.026 が理論上の1回あたりの増加量
-                        // しかし、より滑らかに感じるよう、さらに小さな値にする
-                        float target_acceleration = 1.0f + (data->scroll_consecutive_movements - 5) * 0.015f;
+                    // 高度な適応型加速度制御を実装
+                    
+                    // 1. 動きの速度（速さ）を計算 - スクロール体験の自然さの鍵となる要素
+                    int64_t velocity_time_window = 100; // 速度計算の時間窓 (ms)
+                    float movement_velocity = 0.0f;
+                    
+                    // 現在の動きの速度を計算（最近のN回の動きの累積を時間で割る）
+                    if (time_diff > 0 && time_diff < velocity_time_window) {
+                        // 単位時間あたりの動き量（速度）を計算
+                        movement_velocity = (float)movement_size / (float)time_diff * 50.0f;
+                    }
+                    
+                    // 速度の指数平滑化 - 突然の変化を抑え、徐々に追従
+                    if (data->scroll_prev_movement_velocity > 0) {
+                        // 前回の速度と今回の速度を混合（80%:20%の比率）
+                        movement_velocity = data->scroll_prev_movement_velocity * 0.8f + movement_velocity * 0.2f;
+                    }
+                    data->scroll_prev_movement_velocity = movement_velocity;
+                    
+                    // 2. 加速度曲線の適用 - 非線形な曲線でより自然な加速を実現
+                    float base_acceleration = 1.0f;
+                    float max_acceleration = 4.0f;
+                    
+                    // 非線形シグモイド関数による加速度マッピング
+                    // シグモイド関数: 1 / (1 + e^(-x)) は滑らかなS字カーブを生成
+                    if (data->scroll_consecutive_movements > 5) {
+                        // シグモイド関数のための入力値を計算
+                        // 連続動作回数と動きの速度の両方を考慮
+                        float sigmoid_input = (data->scroll_consecutive_movements - 5) / 80.0f;
+                        sigmoid_input += movement_velocity / 50.0f; // 速度の影響を加える
                         
-                        // 現在値から目標値へ、非常に小さなステップで調整する
-                        // これにより、カクつきのない非常に滑らかな加速が得られる
+                        // -6〜6の範囲に制限（シグモイド関数の有効範囲）
+                        sigmoid_input = fmaxf(-6.0f, fminf(6.0f, sigmoid_input));
+                        
+                        // シグモイド関数による0〜1の出力
+                        float sigmoid_output = 1.0f / (1.0f + expf(-sigmoid_input));
+                        
+                        // 目標加速度を基本〜最大の間でマッピング
+                        float target_acceleration = base_acceleration + 
+                                                  (max_acceleration - base_acceleration) * sigmoid_output;
+                        
+                        // 現在の加速度から目標加速度へ非常に小さなステップで近づける
+                        // ステップサイズは現在の速度に応じて調整（速いほど大きく、遅いほど小さく）
+                        float step_size = fmaxf(0.002f, fminf(0.01f, movement_velocity / 200.0f));
+                        
                         if (target_acceleration > data->scroll_acceleration) {
-                            // 現在値より大きければ、少しだけ増加
-                            data->scroll_acceleration += 0.01f;
+                            data->scroll_acceleration += step_size;
+                        } else if (target_acceleration < data->scroll_acceleration) {
+                            // 減速も許可 - これが高品質なスクロール体験において重要
+                            data->scroll_acceleration -= step_size * 0.5f; // 減速は加速よりゆっくり
                         }
                         
-                        // 最大値を4.0に制限
-                        data->scroll_acceleration = fminf(4.0f, data->scroll_acceleration);
+                        // 加速度の範囲を制限
+                        data->scroll_acceleration = fmaxf(base_acceleration, 
+                                                    fminf(max_acceleration, data->scroll_acceleration));
                     } else {
-                        // 120回を超えたら最大加速度(4.0)に近づける
-                        data->scroll_acceleration = fminf(4.0f, data->scroll_acceleration + 0.02f);
+                        // 最初の数回は基本速度（加速なし）
+                        data->scroll_acceleration = base_acceleration;
                     }
                 } else {
                     // 長時間動きがなかった場合、加速度をリセット
@@ -1088,6 +1123,7 @@ static int pmw3610_init(const struct device *dev) {
     data->scroll_acceleration = 1.0f;
     data->scroll_consecutive_movements = 0;
     data->scroll_prev_movement_size = 0;
+    data->scroll_prev_movement_velocity = 0.0f;
 
 #ifdef CONFIG_PMW3610_SMOOTHING_FILTER
     // 平滑化フィルター用の変数を初期化

@@ -39,6 +39,7 @@ struct pixart_data {
     float scroll_acceleration;          // 現在の加速度
     int16_t scroll_consecutive_movements; // 連続した動きのカウント
     int16_t scroll_prev_movement_size;    // 前回の動きの大きさ
+    float scroll_prev_movement_velocity;  // 前回の動きの速度（単位時間あたりの移動量）
 
 #ifdef CONFIG_PMW3610_POLLING_RATE_125_SW
     int64_t last_poll_time;
