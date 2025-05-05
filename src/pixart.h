@@ -40,6 +40,13 @@ struct pixart_data {
     int16_t scroll_consecutive_movements; // 連続した動きのカウント
     int16_t scroll_prev_movement_size;    // 前回の動きの大きさ
     float scroll_prev_movement_velocity;  // 前回の動きの速度（単位時間あたりの移動量）
+    
+    // スクロール補間のための変数
+    int16_t scroll_last_direction_x;    // 前回のスクロール方向 X (+1, 0, -1)
+    int16_t scroll_last_direction_y;    // 前回のスクロール方向 Y (+1, 0, -1) 
+    int16_t scroll_missed_detection_count; // 連続した取りこぼし検出カウント
+    int16_t scroll_consistent_direction_count; // 同一方向への連続スクロールカウント
+    int64_t scroll_last_real_movement_time; // 実際の動きが最後に検出された時間
 
 #ifdef CONFIG_PMW3610_POLLING_RATE_125_SW
     int64_t last_poll_time;

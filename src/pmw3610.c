@@ -620,6 +620,13 @@ static int pmw3610_report_data(const struct device *dev) {
             data->scroll_acceleration = 1.0f;
             data->scroll_consecutive_movements = 0;
             data->scroll_last_movement_time = 0;
+            
+            // スクロール補間変数もリセット
+            data->scroll_last_direction_x = 0;
+            data->scroll_last_direction_y = 0;
+            data->scroll_missed_detection_count = 0;
+            data->scroll_consistent_direction_count = 0;
+            data->scroll_last_real_movement_time = 0;
         }
         dividor = CONFIG_PMW3610_SCROLL_DIVIDOR; // スクロールモード専用のdividor値を使用
         break;
@@ -1015,6 +1022,73 @@ static int pmw3610_report_data(const struct device *dev) {
                 }
             }
             
+            // 取りこぼし検出のための方向検出と状態更新
+            int16_t current_direction_x = (scroll_x > 0) ? 1 : ((scroll_x < 0) ? -1 : 0);
+            int16_t current_direction_y = (scroll_y > 0) ? 1 : ((scroll_y < 0) ? -1 : 0);
+            
+            // スクロール動作がある場合、実際の動き時間を更新し、方向情報を記録
+            if (movement_size > 0) {
+                data->scroll_last_real_movement_time = current_time;
+                
+                // 同じ方向への連続スクロールかチェック
+                if ((current_direction_x == data->scroll_last_direction_x && current_direction_x != 0) ||
+                    (current_direction_y == data->scroll_last_direction_y && current_direction_y != 0)) {
+                    data->scroll_consistent_direction_count++;
+                } else {
+                    // 方向が変わったらリセット
+                    data->scroll_consistent_direction_count = 1;
+                }
+                
+                // 方向情報を更新
+                data->scroll_last_direction_x = current_direction_x;
+                data->scroll_last_direction_y = current_direction_y;
+                
+                // 取りこぼしカウントをリセット
+                data->scroll_missed_detection_count = 0;
+            } else {
+                // 動きがない場合、取りこぼし検出ロジックを適用
+                
+                // 前回の実際の動きからの経過時間
+                int64_t time_since_real_movement = current_time - data->scroll_last_real_movement_time;
+                
+                // 取りこぼし条件：
+                // 1. 前回の動きから短時間（150ms以内）である
+                // 2. 連続した同方向スクロールが一定回数（3回以上）ある
+                // 3. 取りこぼしカウントが閾値（5回）以下である
+                if (time_since_real_movement < 150 && 
+                    data->scroll_consistent_direction_count >= 3 && 
+                    data->scroll_missed_detection_count < 5) {
+                    
+                    // 取りこぼしと判断、前回の方向に基づいて補間値を生成
+                    // 補間強度は取りこぼし回数に応じて減衰
+                    float interpolation_factor = 1.0f - (data->scroll_missed_detection_count * 0.15f);
+                    
+                    // 補間値を計算（前回の方向 * 前回の速度の一部 * 減衰係数）
+                    if (data->scroll_last_direction_x != 0) {
+                        scroll_x = data->scroll_last_direction_x * 
+                                  (data->scroll_prev_movement_velocity * 0.3f) * 
+                                  interpolation_factor;
+                    }
+                    
+                    if (data->scroll_last_direction_y != 0) {
+                        scroll_y = data->scroll_last_direction_y * 
+                                  (data->scroll_prev_movement_velocity * 0.3f) * 
+                                  interpolation_factor;
+                    }
+                    
+                    // 取りこぼしカウントを増加
+                    data->scroll_missed_detection_count++;
+                    
+                    // ログデータ（デバッグ時のみ有効にする）
+                    // LOG_DBG("Interpolated scroll: x=%d, y=%d, factor=%.2f", 
+                    //       (int)scroll_x, (int)scroll_y, (double)interpolation_factor);
+                } else if (time_since_real_movement >= 150) {
+                    // 長時間動きがなければ本当に停止したと判断
+                    data->scroll_consistent_direction_count = 0;
+                    data->scroll_missed_detection_count = 0;
+                }
+            }
+            
             // Accumulate scroll delta
             data->scroll_delta_x += scroll_x;
             data->scroll_delta_y += scroll_y;
@@ -1124,6 +1198,13 @@ static int pmw3610_init(const struct device *dev) {
     data->scroll_consecutive_movements = 0;
     data->scroll_prev_movement_size = 0;
     data->scroll_prev_movement_velocity = 0.0f;
+    
+    // スクロール補間変数を初期化
+    data->scroll_last_direction_x = 0;
+    data->scroll_last_direction_y = 0;
+    data->scroll_missed_detection_count = 0;
+    data->scroll_consistent_direction_count = 0;
+    data->scroll_last_real_movement_time = 0;
 
 #ifdef CONFIG_PMW3610_SMOOTHING_FILTER
     // 平滑化フィルター用の変数を初期化
