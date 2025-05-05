@@ -746,6 +746,14 @@ static int pmw3610_report_data(const struct device *dev) {
         // 移動量を累積（通常の処理後の値と生の値の両方を累積）
         g_movement_accumulator += movement_size;
         g_raw_movement_accumulator += raw_movement;
+        
+        // すでにAMLが有効であり、かつ大きな動きがある場合はタイマーを延長する
+        // 絶対値が一定以上あれば継続的にタイマーをリセット
+        if (automouse_triggered && (movement_size > 2 || raw_movement > 2)) {
+            // タイマーを停止して再開始 = タイマーのリセット
+            k_timer_stop(&automouse_layer_timer);
+            k_timer_start(&automouse_layer_timer, K_MSEC(CONFIG_PMW3610_AUTOMOUSE_TIMEOUT_MS), K_NO_WAIT);
+        }
 
         // トラックボールの動きに関するデバッグ情報をログに出力
         /* if (raw_movement > 0 || movement_size > 0) {
