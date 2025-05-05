@@ -610,6 +610,12 @@ static int pmw3610_report_data(const struct device *dev) {
             g_raw_movement_accumulator = 0;
             // g_last_movement_time は更新しない - これにより前のモードでの最後の動きからの時間が計測され、
             // すぐにAMLのチェックが行われる
+            
+            // MOVEモード加速変数をリセット
+            data->move_acceleration = 1.0f;
+            data->move_consecutive_movements = 0;
+            data->move_last_movement_time = 0;
+            data->move_prev_movement_velocity = 0.0f;
         }
         break;
     case SCROLL:
@@ -815,27 +821,91 @@ static int pmw3610_report_data(const struct device *dev) {
 #endif
 
 #ifdef CONFIG_PMW3610_ADJUSTABLE_MOUSESPEED
+    // 動きの大きさを計算
     int16_t movement_size = abs(raw_x) + abs(raw_y);
 
-    float speed_multiplier = 1.0; //速度の倍率
-    if (movement_size > 60) {
-        speed_multiplier = 3.0;
-    }else if (movement_size > 30) {
-        speed_multiplier = 1.5;
-    }else if (movement_size > 5) {
-        speed_multiplier = 1.0;
-    }else if (movement_size > 4) {
-        speed_multiplier = 0.9;
-    }else if (movement_size > 3) {
-        speed_multiplier = 0.7;
-    }else if (movement_size > 2) {
-        speed_multiplier = 0.5;
-    }else if (movement_size > 1) {
-        speed_multiplier = 0.1;
+    // 高度な適応型加速度制御を実装（スクロールモードと類似の手法）
+    
+    // 現在の時間を取得
+    int64_t current_time = k_uptime_get();
+    
+    // 時間差を計算（ミリ秒）
+    int64_t time_diff = current_time - data->move_last_movement_time;
+    
+    // 速度計算用のパラメータ
+    int64_t velocity_time_window = 100; // 速度計算の時間窓 (ms)
+    float movement_velocity = 0.0f;
+    
+    // 単位時間あたりの動き量（速度）を計算
+    if (movement_size > 0) {
+        if (time_diff > 0 && time_diff < velocity_time_window) {
+            movement_velocity = (float)movement_size / (float)time_diff * 50.0f;
+        }
+        
+        // 連続動作カウントを増加
+        if (data->move_last_movement_time > 0 && time_diff < 500) {
+            data->move_consecutive_movements++;
+        } else {
+            // 長時間動きがなかった場合はリセット
+            data->move_consecutive_movements = 1;
+        }
+        
+        // 速度の指数平滑化（急激な変化を抑制）
+        if (data->move_prev_movement_velocity > 0) {
+            // 前回の速度と今回の速度を混合（80%:20%の比率）
+            movement_velocity = data->move_prev_movement_velocity * 0.8f + movement_velocity * 0.2f;
+        }
+        data->move_prev_movement_velocity = movement_velocity;
+        
+        // シグモイド関数のための入力値を計算
+        float sigmoid_input = (data->move_consecutive_movements - 5) / 100.0f;
+        sigmoid_input += movement_velocity / 30.0f; // 速度の影響を加える
+        
+        // -6〜6の範囲に制限（シグモイド関数の有効範囲）
+        sigmoid_input = fmaxf(-6.0f, fminf(6.0f, sigmoid_input));
+        
+        // シグモイド関数による0〜1の出力を計算（滑らかなS字カーブ）
+        float sigmoid_output = 1.0f / (1.0f + expf(-sigmoid_input));
+        
+        // 基本値と最大値のパラメータ設定
+        float base_multiplier = 0.8f; // 最低倍率（小さな動きでの精度のため1.0未満）
+        float max_multiplier = 3.0f;  // 最大倍率
+        
+        // 最終的な速度乗数を計算
+        float target_multiplier = base_multiplier + (max_multiplier - base_multiplier) * sigmoid_output;
+        
+        // 現在値から目標値へ、小さなステップで調整する（滑らかな変化のため）
+        float step_size = fmaxf(0.005f, fminf(0.02f, movement_velocity / 150.0f));
+        
+        if (target_multiplier > data->move_acceleration) {
+            data->move_acceleration += step_size;
+        } else if (target_multiplier < data->move_acceleration) {
+            // 減速も許可
+            data->move_acceleration -= step_size * 0.5f; // 減速は加速よりゆっくり
+        }
+        
+        // 加速度の範囲を制限
+        data->move_acceleration = fmaxf(base_multiplier, fminf(max_multiplier, data->move_acceleration));
+        
+        // 時間情報を更新
+        data->move_last_movement_time = current_time;
+    } else if (time_diff > 500) {
+        // 長時間動きがない場合、加速度を徐々に下げる
+        data->move_acceleration = fmaxf(1.0f, data->move_acceleration * 0.95f);
+        
+        if (time_diff > 1000) {
+            // 1秒以上動きがない場合、完全にリセット
+            data->move_acceleration = 1.0f;
+            data->move_consecutive_movements = 0;
+        }
     }
-
-    raw_x = raw_x * speed_multiplier;
-    raw_y = raw_y * speed_multiplier;
+    
+    // 最終的な加速度を適用
+    float speed_multiplier = data->move_acceleration;
+    
+    // 最終的な座標値を計算
+    raw_x = (int16_t)(raw_x * speed_multiplier);
+    raw_y = (int16_t)(raw_y * speed_multiplier);
 
 #endif
 
@@ -1224,6 +1294,12 @@ static int pmw3610_init(const struct device *dev) {
     data->scroll_missed_detection_count = 0;
     data->scroll_consistent_direction_count = 0;
     data->scroll_last_real_movement_time = 0;
+    
+    // MOVEモードの加速変数を初期化
+    data->move_acceleration = 1.0f;
+    data->move_consecutive_movements = 0;
+    data->move_last_movement_time = 0;
+    data->move_prev_movement_velocity = 0.0f;
 
 #ifdef CONFIG_PMW3610_SMOOTHING_FILTER
     // 平滑化フィルター用の変数を初期化

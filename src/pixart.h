@@ -47,6 +47,12 @@ struct pixart_data {
     int16_t scroll_missed_detection_count; // 連続した取りこぼし検出カウント
     int16_t scroll_consistent_direction_count; // 同一方向への連続スクロールカウント
     int64_t scroll_last_real_movement_time; // 実際の動きが最後に検出された時間
+    
+    // MOVEモードの高度な加速制御のための変数
+    float move_acceleration;          // 現在の加速度
+    int16_t move_consecutive_movements; // 連続した動きのカウント
+    int64_t move_last_movement_time;  // 最後の動きが検出された時間
+    float move_prev_movement_velocity; // 前回の動きの速度
 
 #ifdef CONFIG_PMW3610_POLLING_RATE_125_SW
     int64_t last_poll_time;
