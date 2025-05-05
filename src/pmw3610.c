@@ -602,6 +602,14 @@ static int pmw3610_report_data(const struct device *dev) {
     case MOVE:
         set_cpi_if_needed(dev, CONFIG_PMW3610_CPI);
         dividor = CONFIG_PMW3610_CPI_DIVIDOR;
+        if (input_mode_changed) {
+            // 前のモードからMOVEモードに切り替わった場合は累積値をリセットするが、
+            // AMLの状態は維持する（automouse_triggered はリセットしない）
+            g_movement_accumulator = 0;
+            g_raw_movement_accumulator = 0;
+            // g_last_movement_time は更新しない - これにより前のモードでの最後の動きからの時間が計測され、
+            // すぐにAMLのチェックが行われる
+        }
         break;
     case SCROLL:
         set_cpi_if_needed(dev, CONFIG_PMW3610_CPI);
@@ -746,12 +754,19 @@ static int pmw3610_report_data(const struct device *dev) {
                     g_raw_movement_accumulator, MOVEMENT_THRESHOLD, RAW_THRESHOLD_MULTIPLIER);
         } */
 
-        // 指定時間が経過したらチェックとリセットを行う
-        if (time_since_last_movement >= ACCUMULATION_TIME_MS) {
+        // モード切替直後または指定時間が経過したらチェックとリセットを行う
+        bool just_switched_mode = input_mode_changed;
+        if (just_switched_mode || time_since_last_movement >= ACCUMULATION_TIME_MS) {
             // 通常の閾値チェックか生の動き値のチェックのどちらかで条件を満たせばレイヤーをアクティブにする
-            if ((g_movement_accumulator > MOVEMENT_THRESHOLD || 
-                 g_raw_movement_accumulator > MOVEMENT_THRESHOLD * RAW_THRESHOLD_MULTIPLIER) &&
-                (automouse_triggered || zmk_keymap_highest_layer_active() != AUTOMOUSE_LAYER)) {
+            // SCROLLモードとMOVEモード間の切り替えでもAMLタイマーを維持するため、
+            // automouse_triggered が true（AMLがすでにアクティブ）でもレイヤーが違えば再アクティブ化する
+            
+            // モード切替直後はトラックボールの動き値の閾値を無視して強制的にAMLをアクティブにする
+            bool should_activate = just_switched_mode || 
+                ((g_movement_accumulator > MOVEMENT_THRESHOLD || 
+                 g_raw_movement_accumulator > MOVEMENT_THRESHOLD * RAW_THRESHOLD_MULTIPLIER));
+                
+            if (should_activate && zmk_keymap_highest_layer_active() != AUTOMOUSE_LAYER) {
                 activate_automouse_layer();
                 
                 /* LOG_INF("Activating mouse layer: acc=%d, raw_acc=%d, thresh=%d, raw_thresh=%d", 
