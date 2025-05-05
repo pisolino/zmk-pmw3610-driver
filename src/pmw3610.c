@@ -608,6 +608,9 @@ static int pmw3610_report_data(const struct device *dev) {
         if (input_mode_changed) {
             data->scroll_delta_x = 0;
             data->scroll_delta_y = 0;
+            data->scroll_acceleration = 1.0f;
+            data->scroll_consecutive_movements = 0;
+            data->scroll_last_movement_time = 0;
         }
         dividor = CONFIG_PMW3610_SCROLL_DIVIDOR; // スクロールモード専用のdividor値を使用
         break;
@@ -863,27 +866,83 @@ static int pmw3610_report_data(const struct device *dev) {
             int16_t scroll_x = x;
             int16_t scroll_y = y;
             
-#ifdef CONFIG_PMW3610_ADJUSTABLE_SCROLLSPEED
-            // Apply adaptive scrolling based on movement speed
+            // 動きの大きさを計算
             int16_t movement_size = abs(x) + abs(y);
-            int8_t scroll_lines = 2; // Default to 1 line of scrolling
             
-            // Adjust scroll amount based on movement size with wider intervals
-            // for smoother acceleration curve that feels natural with trackballs
-            if (movement_size > 90) {
-                scroll_lines = 5; // Maximum scrwolling speed for very fast movements
-            } else if (movement_size > 60) {
-                scroll_lines = 4; // Very fast scrolling
-            } else if (movement_size > 30) {
-                scroll_lines = 3; // Fast scrolling
-            }
+            // 加速ロジックはどんな場合でも適用（CONFIG_PMW3610_ADJUSTABLE_SCROLLSPEEDなくても適用）
+            // 現在の時間を取得
+            int64_t current_time = k_uptime_get();
             
-            // Apply scroll_lines multiplier only when exceeding threshold
-            if (scroll_lines > 1) {
-                scroll_x *= scroll_lines;
-                scroll_y *= scroll_lines;
-            }
+            // 加速度計算のための時間差を計算（ミリ秒）
+            int64_t time_diff = current_time - data->scroll_last_movement_time;
+            
+            // 加速ロジック
+            if (movement_size > 0) {
+                // 閾値以上の動きがある場合
+                if (data->scroll_last_movement_time > 0 && time_diff < 500) {
+                    // 前回の動きから500ms以内の場合、加速を徐々に増加
+                    data->scroll_consecutive_movements++;
+                    
+                    // 加速度を更新（徐々に増加、上限あり）
+                    if (data->scroll_consecutive_movements > 30) {
+                        data->scroll_acceleration = fminf(4.0f, data->scroll_acceleration + 0.05f);
+                    } else if (data->scroll_consecutive_movements > 20) {
+                        data->scroll_acceleration = fminf(3.0f, data->scroll_acceleration + 0.04f);
+                    } else if (data->scroll_consecutive_movements > 10) {
+                        data->scroll_acceleration = fminf(2.5f, data->scroll_acceleration + 0.03f);
+                    } else if (data->scroll_consecutive_movements > 5) {
+                        data->scroll_acceleration = fminf(2.0f, data->scroll_acceleration + 0.02f);
+                    } else {
+                        data->scroll_acceleration = fminf(1.5f, data->scroll_acceleration + 0.01f);
+                    }
+                } else {
+                    // 長時間動きがなかった場合、加速度をリセット
+                    data->scroll_acceleration = 1.0f;
+                    data->scroll_consecutive_movements = 1;
+                }
+                
+                // 動きの大きさにも加速度を調整
+                float size_factor = 1.0f;
+                
+#ifdef CONFIG_PMW3610_ADJUSTABLE_SCROLLSPEED
+                // 動きの大きさに基づいた追加の調整
+                if (movement_size > 90) {
+                    size_factor = 2.5f; // 非常に大きな動きの場合
+                } else if (movement_size > 60) {
+                    size_factor = 2.0f; // 大きな動きの場合
+                } else if (movement_size > 30) {
+                    size_factor = 1.5f; // 中程度の動きの場合
+                } else if (movement_size > 15) {
+                    size_factor = 1.2f; // 小さめの動きの場合
+                }
 #endif
+                
+                // 最終的な加速率を計算（時間ベースの加速と動きの大きさベースの加速を組み合わせる）
+                float final_acceleration = data->scroll_acceleration * size_factor;
+                
+                // スクロール値に加速を適用
+                scroll_x = (int16_t)(scroll_x * final_acceleration);
+                scroll_y = (int16_t)(scroll_y * final_acceleration);
+                
+                // LOG_INF("Scroll accel: %d movements, accel=%.2f, size=%d, final=%.2f", 
+                //         data->scroll_consecutive_movements, 
+                //         (double)data->scroll_acceleration,
+                //         movement_size,
+                //         (double)final_acceleration);
+                
+                // 時間と動きのサイズを更新
+                data->scroll_last_movement_time = current_time;
+                data->scroll_prev_movement_size = movement_size;
+            } else if (time_diff > 500) {
+                // 500ms以上動きがない場合、加速度を徐々に減少
+                data->scroll_acceleration = fmaxf(1.0f, data->scroll_acceleration * 0.95f);
+                
+                if (time_diff > 1000) {
+                    // 1秒以上動きがない場合、完全にリセット
+                    data->scroll_acceleration = 1.0f;
+                    data->scroll_consecutive_movements = 0;
+                }
+            }
             
             // Accumulate scroll delta
             data->scroll_delta_x += scroll_x;
@@ -987,6 +1046,12 @@ static int pmw3610_init(const struct device *dev) {
 
     // init smart algorithm flag;
     data->sw_smart_flag = false;
+    
+    // スクロール加速変数を初期化
+    data->scroll_last_movement_time = 0;
+    data->scroll_acceleration = 1.0f;
+    data->scroll_consecutive_movements = 0;
+    data->scroll_prev_movement_size = 0;
 
 #ifdef CONFIG_PMW3610_SMOOTHING_FILTER
     // 平滑化フィルター用の変数を初期化

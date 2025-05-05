@@ -33,6 +33,12 @@ struct pixart_data {
     uint32_t curr_cpi;
     int32_t scroll_delta_x;
     int32_t scroll_delta_y;
+    
+    // スクロール加速のための変数
+    int64_t scroll_last_movement_time;  // 最後の動きが検出された時間
+    float scroll_acceleration;          // 現在の加速度
+    int16_t scroll_consecutive_movements; // 連続した動きのカウント
+    int16_t scroll_prev_movement_size;    // 前回の動きの大きさ
 
 #ifdef CONFIG_PMW3610_POLLING_RATE_125_SW
     int64_t last_poll_time;
