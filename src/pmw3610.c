@@ -906,28 +906,30 @@ static int pmw3610_report_data(const struct device *dev) {
                     // 前回の動きから500ms以内の場合、加速を徐々に増加
                     data->scroll_consecutive_movements++;
                     
-                    // 加速度を更新（より緩やかな加速カーブと長い低速区間）
-                    if (data->scroll_consecutive_movements > 80) {
-                        data->scroll_acceleration = fminf(4.0f, data->scroll_acceleration + 0.04f);
-                    } else if (data->scroll_consecutive_movements > 70) {
-                        data->scroll_acceleration = fminf(3.5f, data->scroll_acceleration + 0.035f);
-                    } else if (data->scroll_consecutive_movements > 60) {
-                        data->scroll_acceleration = fminf(3.0f, data->scroll_acceleration + 0.03f);
-                    } else if (data->scroll_consecutive_movements > 50) {
-                        data->scroll_acceleration = fminf(2.5f, data->scroll_acceleration + 0.025f);
-                    } else if (data->scroll_consecutive_movements > 40) {
-                        data->scroll_acceleration = fminf(2.0f, data->scroll_acceleration + 0.02f);
-                    } else if (data->scroll_consecutive_movements > 30) {
-                        data->scroll_acceleration = fminf(1.7f, data->scroll_acceleration + 0.015f);
-                    } else if (data->scroll_consecutive_movements > 20) {
-                        data->scroll_acceleration = fminf(1.5f, data->scroll_acceleration + 0.01f);
-                    } else if (data->scroll_consecutive_movements > 10) {
-                        data->scroll_acceleration = fminf(1.3f, data->scroll_acceleration + 0.008f);
-                    } else if (data->scroll_consecutive_movements > 5) {
-                        data->scroll_acceleration = fminf(1.15f, data->scroll_acceleration + 0.005f);
-                    } else {
-                        // 最初の数回の動きは加速なし
+                    // より線形な加速カーブのために毎回少しずつ加速度を上げる
+                    // ステップの概念を廃止し、常に少しずつ加速させることで滑らかさを実現
+                    if (data->scroll_consecutive_movements <= 5) {
+                        // 最初の数回は加速なし（1.0固定）
                         data->scroll_acceleration = 1.0f;
+                    } else if (data->scroll_consecutive_movements <= 120) {
+                        // 6回目から120回目までは非常に緩やかな加速
+                        // 最大値の4.0に向けて非常に緩やかな線形加速を行う
+                        // (4.0 - 1.0) / (120 - 5) = 0.026 が理論上の1回あたりの増加量
+                        // しかし、より滑らかに感じるよう、さらに小さな値にする
+                        float target_acceleration = 1.0f + (data->scroll_consecutive_movements - 5) * 0.015f;
+                        
+                        // 現在値から目標値へ、非常に小さなステップで調整する
+                        // これにより、カクつきのない非常に滑らかな加速が得られる
+                        if (target_acceleration > data->scroll_acceleration) {
+                            // 現在値より大きければ、少しだけ増加
+                            data->scroll_acceleration += 0.01f;
+                        }
+                        
+                        // 最大値を4.0に制限
+                        data->scroll_acceleration = fminf(4.0f, data->scroll_acceleration);
+                    } else {
+                        // 120回を超えたら最大加速度(4.0)に近づける
+                        data->scroll_acceleration = fminf(4.0f, data->scroll_acceleration + 0.02f);
                     }
                 } else {
                     // 長時間動きがなかった場合、加速度をリセット
