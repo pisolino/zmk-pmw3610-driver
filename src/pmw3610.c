@@ -1089,6 +1089,25 @@ static int pmw3610_report_data(const struct device *dev) {
                 }
             }
             
+            // スクロール方向の変化を検出
+            int16_t prev_delta_sign_x = data->scroll_delta_x > 0 ? 1 : (data->scroll_delta_x < 0 ? -1 : 0);
+            int16_t prev_delta_sign_y = data->scroll_delta_y > 0 ? 1 : (data->scroll_delta_y < 0 ? -1 : 0);
+            int16_t curr_scroll_sign_x = scroll_x > 0 ? 1 : (scroll_x < 0 ? -1 : 0);
+            int16_t curr_scroll_sign_y = scroll_y > 0 ? 1 : (scroll_y < 0 ? -1 : 0);
+            
+            // 方向が逆転した場合は累積値をリセット
+            // X方向のチェック（X方向にスクロールがあり、かつ前回の累積と逆方向の場合）
+            if (curr_scroll_sign_x != 0 && prev_delta_sign_x != 0 && curr_scroll_sign_x != prev_delta_sign_x) {
+                data->scroll_delta_x = 0;
+                // LOG_DBG("X direction reversed, resetting delta");
+            }
+            
+            // Y方向のチェック（Y方向にスクロールがあり、かつ前回の累積と逆方向の場合）
+            if (curr_scroll_sign_y != 0 && prev_delta_sign_y != 0 && curr_scroll_sign_y != prev_delta_sign_y) {
+                data->scroll_delta_y = 0;
+                // LOG_DBG("Y direction reversed, resetting delta");
+            }
+            
             // Accumulate scroll delta
             data->scroll_delta_x += scroll_x;
             data->scroll_delta_y += scroll_y;
