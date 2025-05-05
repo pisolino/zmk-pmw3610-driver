@@ -906,22 +906,25 @@ static int pmw3610_report_data(const struct device *dev) {
                     // 前回の動きから500ms以内の場合、加速を徐々に増加
                     data->scroll_consecutive_movements++;
                     
-                    // 加速度を更新（徐々に増加、上限あり）
-                    // より緩やかな加速カーブと長い低速区間
-                    if (data->scroll_consecutive_movements > 50) {
-                        data->scroll_acceleration = fminf(4.0f, data->scroll_acceleration + 0.05f);
-                    } else if (data->scroll_consecutive_movements > 40) {
-                        data->scroll_acceleration = fminf(3.5f, data->scroll_acceleration + 0.04f);
-                    } else if (data->scroll_consecutive_movements > 30) {
+                    // 加速度を更新（より緩やかな加速カーブと長い低速区間）
+                    if (data->scroll_consecutive_movements > 80) {
+                        data->scroll_acceleration = fminf(4.0f, data->scroll_acceleration + 0.04f);
+                    } else if (data->scroll_consecutive_movements > 70) {
+                        data->scroll_acceleration = fminf(3.5f, data->scroll_acceleration + 0.035f);
+                    } else if (data->scroll_consecutive_movements > 60) {
                         data->scroll_acceleration = fminf(3.0f, data->scroll_acceleration + 0.03f);
-                    } else if (data->scroll_consecutive_movements > 20) {
+                    } else if (data->scroll_consecutive_movements > 50) {
                         data->scroll_acceleration = fminf(2.5f, data->scroll_acceleration + 0.025f);
-                    } else if (data->scroll_consecutive_movements > 15) {
+                    } else if (data->scroll_consecutive_movements > 40) {
                         data->scroll_acceleration = fminf(2.0f, data->scroll_acceleration + 0.02f);
+                    } else if (data->scroll_consecutive_movements > 30) {
+                        data->scroll_acceleration = fminf(1.7f, data->scroll_acceleration + 0.015f);
+                    } else if (data->scroll_consecutive_movements > 20) {
+                        data->scroll_acceleration = fminf(1.5f, data->scroll_acceleration + 0.01f);
                     } else if (data->scroll_consecutive_movements > 10) {
-                        data->scroll_acceleration = fminf(1.5f, data->scroll_acceleration + 0.015f);
+                        data->scroll_acceleration = fminf(1.3f, data->scroll_acceleration + 0.008f);
                     } else if (data->scroll_consecutive_movements > 5) {
-                        data->scroll_acceleration = fminf(1.2f, data->scroll_acceleration + 0.01f);
+                        data->scroll_acceleration = fminf(1.15f, data->scroll_acceleration + 0.005f);
                     } else {
                         // 最初の数回の動きは加速なし
                         data->scroll_acceleration = 1.0f;
