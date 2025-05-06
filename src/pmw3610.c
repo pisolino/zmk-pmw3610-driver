@@ -1166,21 +1166,22 @@ static int pmw3610_report_data(const struct device *dev) {
                     
                     // 連続動作の時間に応じた加速度制御を強化
                     // 連続カウントが少ない場合は加速を完全に抑制
-                    if (data->scroll_consecutive_movements < 20) {
-                        // 連続動作回数が20未満は常に最小値に制限
+                    if (data->scroll_consecutive_movements < 35) {
+                        // 連続動作回数が35未満は常に最小値に制限（閾値を大幅に引き上げ）
                         velocity_based_amplitude = 1.0f;
-                    } else if (data->scroll_consecutive_movements < 40) {
-                        // 20〜40回の間は極めて緩やかに増加
-                        float dampen_factor = (data->scroll_consecutive_movements - 20.0f) / 20.0f;
+                    } else if (data->scroll_consecutive_movements < 70) {
+                        // 35〜70回の間は極限まで緩やかに増加
+                        float dampen_factor = (data->scroll_consecutive_movements - 35.0f) / 35.0f;
                         float base_amplitude = velocity_based_amplitude;
                         
-                        // 三次曲線で非常に緩やかに増加（より自然な加速感）
-                        dampen_factor = dampen_factor * dampen_factor * dampen_factor; // 三乗で超緩やか
+                        // 四次曲線で極限まで緩やかに増加
+                        // x^4の曲線は原点付近がほぼ水平で、X軸に極めて長く接するように進む
+                        dampen_factor = dampen_factor * dampen_factor * dampen_factor * dampen_factor; // 四乗で超超緩やか
                         velocity_based_amplitude = 1.0f + (base_amplitude - 1.0f) * dampen_factor;
                     }
                     
                     // 最大値の制限（過剰な加速を防止）- さらに上限を下げる
-                    velocity_based_amplitude = fminf(velocity_based_amplitude, 5.0f);
+                    velocity_based_amplitude = fminf(velocity_based_amplitude, 3.0f);
                     
                     // 最小値の設定（速度感知の最小応答を確保）
                     velocity_based_amplitude = fmaxf(velocity_based_amplitude, 1.0f);
@@ -1342,30 +1343,30 @@ static int pmw3610_report_data(const struct device *dev) {
                     // これにより長時間回転させても段階的変化が緩やかになる
                     
                     // 連続動作回数に応じた調整を行う - ほとんどの動きでは常に1イベント
-                    if (data->scroll_consecutive_movements < 30) {
-                        // 短〜中時間の動きでは常に1イベントに制限（閾値を倍に）
+                    if (data->scroll_consecutive_movements < 50) {
+                        // 短〜中時間の動きでは常に1イベントに制限（閾値をさらに引き上げ）
                         scroll_events = 1;
                     } else {
                         // 非常に長い連続動作が続いた場合のみ、振幅に応じたスケーリングを適用
                         // 全ての閾値を大幅に引き上げ
-                        if (scroll_y_abs <= 100.0f) {
-                            // 大幅に拡大した第一段階 - 常に1イベントのみ
+                        if (scroll_y_abs <= 200.0f) {
+                            // 超大幅に拡大した第一段階 - 常に1イベントのみ
                             scroll_events = 1;
-                        } else if (scroll_y_abs <= 250.0f) {
-                            // やや速い動き - 極めて緩やかな係数でごく僅かに増加
-                            scroll_events = (int16_t)(1.0f + (scroll_y_abs - 100.0f) * 0.0004f); 
-                        } else if (scroll_y_abs <= 400.0f) {
-                            // 高速な動き - 加速はほぼ無視できるレベル
-                            scroll_events = (int16_t)(1.0f + (scroll_y_abs - 250.0f) * 0.0002f);
+                        } else if (scroll_y_abs <= 500.0f) {
+                            // やや速い動き - 極限まで緩やかな係数でごく僅かに増加
+                            scroll_events = (int16_t)(1.0f + (scroll_y_abs - 200.0f) * 0.0002f); 
+                        } else if (scroll_y_abs <= 800.0f) {
+                            // 高速な動き - 加速は事実上無視できるレベル
+                            scroll_events = (int16_t)(1.0f + (scroll_y_abs - 500.0f) * 0.0001f);
                         } else {
                             // 非常に高速な動き - 事実上頭打ち
-                            scroll_events = (int16_t)(1.0f + (scroll_y_abs - 400.0f) * 0.0001f);
+                            scroll_events = (int16_t)(1.0f + (scroll_y_abs - 800.0f) * 0.00005f);
                         }
                         
                         // 最後の追加保護：連続動作回数に応じたイベント制限
                         // 極めて長時間の連続動作でのみ複数イベントを許可
-                        if (scroll_events > 1 && data->scroll_consecutive_movements < 45) {
-                            // 連続動作回数が45未満では常に1イベントに制限
+                        if (scroll_events > 1 && data->scroll_consecutive_movements < 70) {
+                            // 連続動作回数が70未満では常に1イベントに制限
                             scroll_events = 1;
                         }
                     }
@@ -1396,30 +1397,30 @@ static int pmw3610_report_data(const struct device *dev) {
                     // これにより長時間回転させても段階的変化が緩やかになる
                     
                     // 連続動作回数に応じた調整を行う - ほとんどの動きでは常に1イベント
-                    if (data->scroll_consecutive_movements < 30) {
-                        // 短〜中時間の動きでは常に1イベントに制限（閾値を倍に）
+                    if (data->scroll_consecutive_movements < 50) {
+                        // 短〜中時間の動きでは常に1イベントに制限（閾値をさらに引き上げ）
                         scroll_events = 1;
                     } else {
                         // 非常に長い連続動作が続いた場合のみ、振幅に応じたスケーリングを適用
                         // 全ての閾値を大幅に引き上げ
-                        if (scroll_x_abs <= 100.0f) {
-                            // 大幅に拡大した第一段階 - 常に1イベントのみ
+                        if (scroll_x_abs <= 200.0f) {
+                            // 超大幅に拡大した第一段階 - 常に1イベントのみ
                             scroll_events = 1;
-                        } else if (scroll_x_abs <= 250.0f) {
-                            // やや速い動き - 極めて緩やかな係数でごく僅かに増加
-                            scroll_events = (int16_t)(1.0f + (scroll_x_abs - 100.0f) * 0.0004f); 
-                        } else if (scroll_x_abs <= 400.0f) {
-                            // 高速な動き - 加速はほぼ無視できるレベル
-                            scroll_events = (int16_t)(1.0f + (scroll_x_abs - 250.0f) * 0.0002f);
+                        } else if (scroll_x_abs <= 500.0f) {
+                            // やや速い動き - 極限まで緩やかな係数でごく僅かに増加
+                            scroll_events = (int16_t)(1.0f + (scroll_x_abs - 200.0f) * 0.0002f); 
+                        } else if (scroll_x_abs <= 800.0f) {
+                            // 高速な動き - 加速は事実上無視できるレベル
+                            scroll_events = (int16_t)(1.0f + (scroll_x_abs - 500.0f) * 0.0001f);
                         } else {
                             // 非常に高速な動き - 事実上頭打ち
-                            scroll_events = (int16_t)(1.0f + (scroll_x_abs - 400.0f) * 0.0001f);
+                            scroll_events = (int16_t)(1.0f + (scroll_x_abs - 800.0f) * 0.00005f);
                         }
                         
                         // 最後の追加保護：連続動作回数に応じたイベント制限
                         // 極めて長時間の連続動作でのみ複数イベントを許可
-                        if (scroll_events > 1 && data->scroll_consecutive_movements < 45) {
-                            // 連続動作回数が45未満では常に1イベントに制限
+                        if (scroll_events > 1 && data->scroll_consecutive_movements < 70) {
+                            // 連続動作回数が70未満では常に1イベントに制限
                             scroll_events = 1;
                         }
                     }
