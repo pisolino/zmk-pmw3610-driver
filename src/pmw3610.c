@@ -1178,7 +1178,35 @@ static int pmw3610_report_data(const struct device *dev) {
                 // LOG_DBG("Y direction reversed, resetting delta");
             }
             
-            // Accumulate scroll delta
+            // 現在、どの方向のスクロールが優勢かをチェック
+            bool vertical_dominant = false;
+            bool horizontal_dominant = false;
+            
+            // 現在の累積値から優勢方向を判断
+            if (abs(data->scroll_delta_y) >= abs(data->scroll_delta_x)) {
+                vertical_dominant = true;
+            } else {
+                horizontal_dominant = true;
+            }
+            
+            // 自然なスクロール体験のための斜め移動処理
+            if (vertical_dominant && abs(data->scroll_delta_y) > CONFIG_PMW3610_SCROLL_TICK / 4) {
+                // 垂直方向が優勢な場合、水平成分も垂直方向に加算
+                if (abs(scroll_x) > 0) {
+                    // 水平成分は垂直スクロール値として扱う（斜め移動の総合的な効果として）
+                    data->scroll_delta_y += abs(scroll_x) * (data->scroll_delta_y >= 0 ? 1 : -1);
+                    scroll_x = 0; // 水平方向の入力は垂直方向に転用したため、リセット
+                }
+            } else if (horizontal_dominant && abs(data->scroll_delta_x) > CONFIG_PMW3610_SCROLL_TICK / 4) {
+                // 水平方向が優勢な場合、垂直成分も水平方向に加算
+                if (abs(scroll_y) > 0) {
+                    // 垂直成分は水平スクロール値として扱う
+                    data->scroll_delta_x += abs(scroll_y) * (data->scroll_delta_x >= 0 ? 1 : -1);
+                    scroll_y = 0; // 垂直方向の入力は水平方向に転用したため、リセット
+                }
+            }
+            
+            // 処理後のスクロール値を累積
             data->scroll_delta_x += scroll_x;
             data->scroll_delta_y += scroll_y;
             
