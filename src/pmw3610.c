@@ -1132,18 +1132,18 @@ static int pmw3610_report_data(const struct device *dev) {
                 // 極めて緩やかな加速曲線を適用するための指数平滑化
                 if (data->scroll_prev_movement_velocity > 0) {
                     // 前回の値との混合（滑らかな変化のため）
-                    // より強い重み付けで前回の値を優先（急激な変化を抑制）
-                    curr_velocity = data->scroll_prev_movement_velocity * 0.94f + curr_velocity * 0.06f;
+                    // さらに強い重み付けで前回の値を優先（急激な変化をさらに抑制）
+                    curr_velocity = data->scroll_prev_movement_velocity * 0.97f + curr_velocity * 0.03f;
                     
                     // 前回より速くなる場合は加速を極端に抑制
                     if (curr_velocity > data->scroll_prev_movement_velocity) {
-                        // 加速をさらに抑制する（増加量の95%を削減 - 事実上加速しない）
+                        // 加速をさらに抑制する（増加量の97%を削減 - 事実上ほぼ加速しない）
                         float increase = curr_velocity - data->scroll_prev_movement_velocity;
-                        curr_velocity = data->scroll_prev_movement_velocity + (increase * 0.05f);
+                        curr_velocity = data->scroll_prev_movement_velocity + (increase * 0.03f);
                         
                         // さらに、前回値から最大増加量に上限を設ける（段階的な加速を防止）
-                        float max_increase = 0.02f; // 一度に増加できる最大値をさらに小さく
-                        if (increase * 0.05f > max_increase) {
+                        float max_increase = 0.01f; // 一度に増加できる最大値をさらに小さく
+                        if (increase * 0.03f > max_increase) {
                             curr_velocity = data->scroll_prev_movement_velocity + max_increase;
                         }
                     }
@@ -1158,14 +1158,25 @@ static int pmw3610_report_data(const struct device *dev) {
                     
                     // 速度に応じた基本的なスクロール量を計算
                     // 基本係数をさらに低減して加速をより緩やかに
-                    const float velocity_factor = 0.3f;  // さらに抑制
+                    const float velocity_factor = 0.2f;  // より強く抑制
                     
-                    // 対数関数的なマッピングで、高速時の加速を緩やかにする
-                    // log(1+x)は原点付近で線形に近く、高値では対数的に増加（緩やかな加速）
-                    float velocity_based_amplitude = velocity_factor * (1.0f + logf(1.0f + curr_velocity * 0.8f));
+                    // より平坦な対数曲線を使用して高速時の加速をさらに緩やかにする
+                    // 対数の係数を小さくして、曲線の傾きを全体的に緩やかに
+                    float velocity_based_amplitude = velocity_factor * (1.0f + logf(1.0f + curr_velocity * 0.5f));
+                    
+                    // 短時間の中程度の動きでは値を最小限に保つために特別な処理を追加
+                    // 連続カウントが少ない場合は加速を制限
+                    if (data->scroll_consecutive_movements < 10) {
+                        // 連続動作回数が少ない場合は強制的に低い値に
+                        float dampen_factor = fminf(1.0f, data->scroll_consecutive_movements / 10.0f);
+                        float base_amplitude = velocity_based_amplitude;
+                        
+                        // 振幅を基本値と計算値の間で調整（連続動作回数に応じて徐々に増加）
+                        velocity_based_amplitude = 1.0f + (base_amplitude - 1.0f) * dampen_factor * dampen_factor;
+                    }
                     
                     // 最大値の制限（過剰な加速を防止）- さらに上限を下げる
-                    velocity_based_amplitude = fminf(velocity_based_amplitude, 12.0f);
+                    velocity_based_amplitude = fminf(velocity_based_amplitude, 8.0f);
                     
                     // 最小値の設定（速度感知の最小応答を確保）
                     velocity_based_amplitude = fmaxf(velocity_based_amplitude, 1.0f);
@@ -1323,27 +1334,41 @@ static int pmw3610_report_data(const struct device *dev) {
                     int16_t scroll_events;
                     
                     // スクロール量をイベント数に変換 - トラックボールセンサー向けに調整
-                    // 超低速なイベント生成で完全に移動距離ベースに近い操作感を実現
-                    // 全体的に閾値を高く調整して加速を抑制
-                    if (scroll_y_abs <= 30.0f) {
-                        // 遅い〜中程度の動き - 常に1イベントのみ
-                        // 最初の段階をさらに広げて、より多くの操作で一定速度を維持
+                    // 閾値を非常に高く設定し、スケーリング係数を大幅に削減
+                    // これにより長時間回転させても段階的変化が緩やかになる
+                    
+                    // 連続動作回数に応じた調整を行う - 短時間の動きでは常に1イベント
+                    if (data->scroll_consecutive_movements < 15) {
+                        // 短時間の動きでは常に1イベントに制限
                         scroll_events = 1;
-                    } else if (scroll_y_abs <= 90.0f) {
-                        // やや速い動き - 加速をさらに抑制（より緩やかな傾き）
-                        scroll_events = (int16_t)(1.0f + (scroll_y_abs - 30.0f) * 0.0015f); 
-                    } else if (scroll_y_abs <= 180.0f) {
-                        // 高速な動き - 加速はほとんどなし
-                        scroll_events = (int16_t)(1.0f + (scroll_y_abs - 90.0f) * 0.001f);
                     } else {
-                        // 非常に高速な動き - 事実上頭打ち
-                        scroll_events = (int16_t)(1.0f + (scroll_y_abs - 180.0f) * 0.0005f);
+                        // 連続動作が続いた場合のみ、振幅に応じたスケーリングを適用
+                        if (scroll_y_abs <= 50.0f) {
+                            // 大幅に拡大した第一段階 - 常に1イベントのみ
+                            scroll_events = 1;
+                        } else if (scroll_y_abs <= 150.0f) {
+                            // やや速い動き - 極めて緩やかな係数で徐々に増加
+                            scroll_events = (int16_t)(1.0f + (scroll_y_abs - 50.0f) * 0.0008f); 
+                        } else if (scroll_y_abs <= 250.0f) {
+                            // 高速な動き - 加速はさらに緩やか
+                            scroll_events = (int16_t)(1.0f + (scroll_y_abs - 150.0f) * 0.0004f);
+                        } else {
+                            // 非常に高速な動き - ほぼ頭打ち
+                            scroll_events = (int16_t)(1.0f + (scroll_y_abs - 250.0f) * 0.0002f);
+                        }
+                        
+                        // 最後の追加保護：連続動作回数に応じたイベント制限
+                        // 長時間の連続動作でのみ複数イベントを許可
+                        if (scroll_events > 1 && data->scroll_consecutive_movements < 25) {
+                            // 連続動作回数が25未満では常に1イベントに制限
+                            scroll_events = 1;
+                        }
                     }
                     
                     // 最低1つは生成（小さな動きでも反応するように）
                     scroll_events = scroll_events > 0 ? scroll_events : 1;
                     
-                    // 多すぎる場合は制限 - 最大値を極限まで低減
+                    // 多すぎる場合は制限 - 最大値をさらに制限
                     scroll_events = scroll_events > 2 ? 2 : scroll_events;
                     
                     // スクロールイベントを送信
@@ -1362,27 +1387,41 @@ static int pmw3610_report_data(const struct device *dev) {
                     int16_t scroll_events;
                     
                     // スクロール量をイベント数に変換 - トラックボールセンサー向けに調整
-                    // 超低速なイベント生成で完全に移動距離ベースに近い操作感を実現
-                    // 全体的に閾値を高く調整して加速を抑制
-                    if (scroll_x_abs <= 30.0f) {
-                        // 遅い〜中程度の動き - 常に1イベントのみ
-                        // 最初の段階をさらに広げて、より多くの操作で一定速度を維持
+                    // 閾値を非常に高く設定し、スケーリング係数を大幅に削減
+                    // これにより長時間回転させても段階的変化が緩やかになる
+                    
+                    // 連続動作回数に応じた調整を行う - 短時間の動きでは常に1イベント
+                    if (data->scroll_consecutive_movements < 15) {
+                        // 短時間の動きでは常に1イベントに制限
                         scroll_events = 1;
-                    } else if (scroll_x_abs <= 90.0f) {
-                        // やや速い動き - 加速をさらに抑制（より緩やかな傾き）
-                        scroll_events = (int16_t)(1.0f + (scroll_x_abs - 30.0f) * 0.0015f); 
-                    } else if (scroll_x_abs <= 180.0f) {
-                        // 高速な動き - 加速はほとんどなし
-                        scroll_events = (int16_t)(1.0f + (scroll_x_abs - 90.0f) * 0.001f);
                     } else {
-                        // 非常に高速な動き - 事実上頭打ち
-                        scroll_events = (int16_t)(1.0f + (scroll_x_abs - 180.0f) * 0.0005f);
+                        // 連続動作が続いた場合のみ、振幅に応じたスケーリングを適用
+                        if (scroll_x_abs <= 50.0f) {
+                            // 大幅に拡大した第一段階 - 常に1イベントのみ
+                            scroll_events = 1;
+                        } else if (scroll_x_abs <= 150.0f) {
+                            // やや速い動き - 極めて緩やかな係数で徐々に増加
+                            scroll_events = (int16_t)(1.0f + (scroll_x_abs - 50.0f) * 0.0008f); 
+                        } else if (scroll_x_abs <= 250.0f) {
+                            // 高速な動き - 加速はさらに緩やか
+                            scroll_events = (int16_t)(1.0f + (scroll_x_abs - 150.0f) * 0.0004f);
+                        } else {
+                            // 非常に高速な動き - ほぼ頭打ち
+                            scroll_events = (int16_t)(1.0f + (scroll_x_abs - 250.0f) * 0.0002f);
+                        }
+                        
+                        // 最後の追加保護：連続動作回数に応じたイベント制限
+                        // 長時間の連続動作でのみ複数イベントを許可
+                        if (scroll_events > 1 && data->scroll_consecutive_movements < 25) {
+                            // 連続動作回数が25未満では常に1イベントに制限
+                            scroll_events = 1;
+                        }
                     }
                     
                     // 最低1つは生成
                     scroll_events = scroll_events > 0 ? scroll_events : 1;
                     
-                    // 多すぎる場合は制限 - 最大値を極限まで低減
+                    // 多すぎる場合は制限 - 最大値をさらに制限
                     scroll_events = scroll_events > 2 ? 2 : scroll_events;
                     
                     // スクロールイベントを送信
