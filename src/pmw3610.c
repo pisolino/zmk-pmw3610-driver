@@ -1129,21 +1129,21 @@ static int pmw3610_report_data(const struct device *dev) {
                     curr_velocity = velocity_sum / valid_samples;
                 }
                 
-                // さらに指数平滑化を追加（より滑らかな変化のため）
+                // 極めて緩やかな加速曲線を適用するための指数平滑化
                 if (data->scroll_prev_movement_velocity > 0) {
                     // 前回の値との混合（滑らかな変化のため）
-                    // 極めて強い重み付けで前回の値を優先（急激な変化を抑制）
-                    curr_velocity = data->scroll_prev_movement_velocity * 0.92f + curr_velocity * 0.08f;
+                    // より強い重み付けで前回の値を優先（急激な変化を抑制）
+                    curr_velocity = data->scroll_prev_movement_velocity * 0.94f + curr_velocity * 0.06f;
                     
                     // 前回より速くなる場合は加速を極端に抑制
                     if (curr_velocity > data->scroll_prev_movement_velocity) {
-                        // 加速を抑制する（増加量の90%を削減 - 事実上加速しない）
+                        // 加速をさらに抑制する（増加量の95%を削減 - 事実上加速しない）
                         float increase = curr_velocity - data->scroll_prev_movement_velocity;
-                        curr_velocity = data->scroll_prev_movement_velocity + (increase * 0.1f);
+                        curr_velocity = data->scroll_prev_movement_velocity + (increase * 0.05f);
                         
                         // さらに、前回値から最大増加量に上限を設ける（段階的な加速を防止）
-                        float max_increase = 0.05f; // 一度に増加できる最大値を極小に
-                        if (increase * 0.1f > max_increase) {
+                        float max_increase = 0.02f; // 一度に増加できる最大値をさらに小さく
+                        if (increase * 0.05f > max_increase) {
                             curr_velocity = data->scroll_prev_movement_velocity + max_increase;
                         }
                     }
@@ -1154,20 +1154,18 @@ static int pmw3610_report_data(const struct device *dev) {
                 const float velocity_threshold = 0.05f;
                 if (curr_velocity > velocity_threshold) {
                     // 速度を直接スクロール量に変換するが、究極的に抑制された超低速な挙動に調整
-                    // 完全に線形なカーブを使用して加速感をなくす
-                    // 極めて低い係数により正確に距離ベースと同等の挙動を実現
-                    // 移動平均と強い指数平滑化で急激な速度変化を抑制
+                    // 対数曲線的な加速を適用して、速い動きでも急激な加速を防止
                     
                     // 速度に応じた基本的なスクロール量を計算
-                    // 基本係数 - 極限まで低減して移動距離ベースの挙動に近づける
-                    const float velocity_factor = 0.4f;  // 前回の半分にさらに抑制
+                    // 基本係数をさらに低減して加速をより緩やかに
+                    const float velocity_factor = 0.3f;  // さらに抑制
                     
-                    // 線形マッピング - 完全に線形な曲線
-                    // 指数を1.0にして、完全に線形の挙動に調整
-                    float velocity_based_amplitude = curr_velocity * velocity_factor;
+                    // 対数関数的なマッピングで、高速時の加速を緩やかにする
+                    // log(1+x)は原点付近で線形に近く、高値では対数的に増加（緩やかな加速）
+                    float velocity_based_amplitude = velocity_factor * (1.0f + logf(1.0f + curr_velocity * 0.8f));
                     
-                    // 最大値の制限（過剰な加速を防止）
-                    velocity_based_amplitude = fminf(velocity_based_amplitude, 18.0f);
+                    // 最大値の制限（過剰な加速を防止）- さらに上限を下げる
+                    velocity_based_amplitude = fminf(velocity_based_amplitude, 12.0f);
                     
                     // 最小値の設定（速度感知の最小応答を確保）
                     velocity_based_amplitude = fmaxf(velocity_based_amplitude, 1.0f);
@@ -1326,19 +1324,20 @@ static int pmw3610_report_data(const struct device *dev) {
                     
                     // スクロール量をイベント数に変換 - トラックボールセンサー向けに調整
                     // 超低速なイベント生成で完全に移動距離ベースに近い操作感を実現
-                    if (scroll_y_abs <= 20.0f) {
+                    // 全体的に閾値を高く調整して加速を抑制
+                    if (scroll_y_abs <= 30.0f) {
                         // 遅い〜中程度の動き - 常に1イベントのみ
                         // 最初の段階をさらに広げて、より多くの操作で一定速度を維持
                         scroll_events = 1;
-                    } else if (scroll_y_abs <= 60.0f) {
-                        // やや速い動き - 極小のスケーリング（ほぼ無視できるレベル）
-                        scroll_events = (int16_t)(1.0f + (scroll_y_abs - 20.0f) * 0.003f); 
-                    } else if (scroll_y_abs <= 120.0f) {
-                        // 高速な動き - ほぼ加速なし
-                        scroll_events = (int16_t)(1.0f + (scroll_y_abs - 60.0f) * 0.002f);
+                    } else if (scroll_y_abs <= 90.0f) {
+                        // やや速い動き - 加速をさらに抑制（より緩やかな傾き）
+                        scroll_events = (int16_t)(1.0f + (scroll_y_abs - 30.0f) * 0.0015f); 
+                    } else if (scroll_y_abs <= 180.0f) {
+                        // 高速な動き - 加速はほとんどなし
+                        scroll_events = (int16_t)(1.0f + (scroll_y_abs - 90.0f) * 0.001f);
                     } else {
                         // 非常に高速な動き - 事実上頭打ち
-                        scroll_events = (int16_t)(1.0f + (scroll_y_abs - 120.0f) * 0.001f);
+                        scroll_events = (int16_t)(1.0f + (scroll_y_abs - 180.0f) * 0.0005f);
                     }
                     
                     // 最低1つは生成（小さな動きでも反応するように）
@@ -1364,19 +1363,20 @@ static int pmw3610_report_data(const struct device *dev) {
                     
                     // スクロール量をイベント数に変換 - トラックボールセンサー向けに調整
                     // 超低速なイベント生成で完全に移動距離ベースに近い操作感を実現
-                    if (scroll_x_abs <= 20.0f) {
+                    // 全体的に閾値を高く調整して加速を抑制
+                    if (scroll_x_abs <= 30.0f) {
                         // 遅い〜中程度の動き - 常に1イベントのみ
                         // 最初の段階をさらに広げて、より多くの操作で一定速度を維持
                         scroll_events = 1;
-                    } else if (scroll_x_abs <= 60.0f) {
-                        // やや速い動き - 極小のスケーリング（ほぼ無視できるレベル）
-                        scroll_events = (int16_t)(1.0f + (scroll_x_abs - 20.0f) * 0.003f); 
-                    } else if (scroll_x_abs <= 120.0f) {
-                        // 高速な動き - ほぼ加速なし
-                        scroll_events = (int16_t)(1.0f + (scroll_x_abs - 60.0f) * 0.002f);
+                    } else if (scroll_x_abs <= 90.0f) {
+                        // やや速い動き - 加速をさらに抑制（より緩やかな傾き）
+                        scroll_events = (int16_t)(1.0f + (scroll_x_abs - 30.0f) * 0.0015f); 
+                    } else if (scroll_x_abs <= 180.0f) {
+                        // 高速な動き - 加速はほとんどなし
+                        scroll_events = (int16_t)(1.0f + (scroll_x_abs - 90.0f) * 0.001f);
                     } else {
                         // 非常に高速な動き - 事実上頭打ち
-                        scroll_events = (int16_t)(1.0f + (scroll_x_abs - 120.0f) * 0.001f);
+                        scroll_events = (int16_t)(1.0f + (scroll_x_abs - 180.0f) * 0.0005f);
                     }
                     
                     // 最低1つは生成
