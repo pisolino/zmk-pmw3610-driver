@@ -48,6 +48,13 @@ struct pixart_data {
     int16_t scroll_consistent_direction_count; // 同一方向への連続スクロールカウント
     int64_t scroll_last_real_movement_time; // 実際の動きが最後に検出された時間
     
+    // 速度ベースのスクロールのための履歴配列
+    #ifdef CONFIG_PMW3610_VELOCITY_BASED_SCROLLING
+    #define VELOCITY_HISTORY_SIZE 5
+    float velocity_history[VELOCITY_HISTORY_SIZE]; // 速度の履歴
+    int velocity_history_index;                    // 履歴配列の現在のインデックス
+    #endif
+    
     // MOVEモードの高度な加速制御のための変数
     float move_acceleration;          // 現在の加速度
     int16_t move_consecutive_movements; // 連続した動きのカウント

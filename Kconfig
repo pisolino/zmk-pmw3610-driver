@@ -94,6 +94,17 @@ config PMW3610_ADJUSTABLE_SCROLLSPEED
       Adjusts scroll speed based on trackball movement. Faster movements result in
       exponentially faster scrolling, allowing for both precise and quick scrolling.
 
+config PMW3610_VELOCITY_BASED_SCROLLING
+    bool "Enable velocity-based scrolling"
+    default n
+    help
+      Uses velocity-based scrolling instead of distance-based scrolling.
+      This creates a more trackpad-like scrolling experience where scroll
+      speed is directly proportional to the speed of movement rather than
+      the distance moved. This can provide smoother scrolling especially
+      for trackball devices. When disabled, traditional distance-based
+      scrolling is used.
+
 choice
     prompt "Select PMW3610's polling rate"
     default PMW3610_POLLING_RATE_250

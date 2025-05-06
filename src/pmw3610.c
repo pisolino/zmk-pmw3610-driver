@@ -1098,6 +1098,105 @@ static int pmw3610_report_data(const struct device *dev) {
             
             // スクロール動作がある場合、実際の動き時間を更新し、方向情報を記録
             if (movement_size > 0) {
+                
+#ifdef CONFIG_PMW3610_VELOCITY_BASED_SCROLLING
+                // 速度ベースのスクロールを実装（トラックパッドのような動作）
+                // 物理的な移動距離ではなく、動きの速度に基づいてスクロール量を計算
+                
+                // 現在の速度を計算
+                float curr_velocity = 0.0f;
+                if (time_diff > 0 && time_diff <= 100) {
+                    // 単位時間あたりの動きを計算（速度）
+                    curr_velocity = (float)movement_size / (float)time_diff;
+                }
+                
+                // 新しい速度を履歴に追加
+                data->velocity_history[data->velocity_history_index] = curr_velocity;
+                data->velocity_history_index = (data->velocity_history_index + 1) % VELOCITY_HISTORY_SIZE;
+                
+                // 移動平均を計算（急激な変動を抑制）
+                float velocity_sum = 0;
+                int valid_samples = 0;
+                for (int i = 0; i < VELOCITY_HISTORY_SIZE; i++) {
+                    if (data->velocity_history[i] > 0) {
+                        velocity_sum += data->velocity_history[i];
+                        valid_samples++;
+                    }
+                }
+                
+                // 有効なサンプルがある場合のみ平均を計算
+                if (valid_samples > 0) {
+                    curr_velocity = velocity_sum / valid_samples;
+                }
+                
+                // さらに指数平滑化を追加（より滑らかな変化のため）
+                if (data->scroll_prev_movement_velocity > 0) {
+                    // 前回の値との混合（滑らかな変化のため）
+                    // 極めて強い重み付けで前回の値を優先（急激な変化を抑制）
+                    curr_velocity = data->scroll_prev_movement_velocity * 0.92f + curr_velocity * 0.08f;
+                    
+                    // 前回より速くなる場合は加速を極端に抑制
+                    if (curr_velocity > data->scroll_prev_movement_velocity) {
+                        // 加速を抑制する（増加量の90%を削減 - 事実上加速しない）
+                        float increase = curr_velocity - data->scroll_prev_movement_velocity;
+                        curr_velocity = data->scroll_prev_movement_velocity + (increase * 0.1f);
+                        
+                        // さらに、前回値から最大増加量に上限を設ける（段階的な加速を防止）
+                        float max_increase = 0.05f; // 一度に増加できる最大値を極小に
+                        if (increase * 0.1f > max_increase) {
+                            curr_velocity = data->scroll_prev_movement_velocity + max_increase;
+                        }
+                    }
+                }
+                data->scroll_prev_movement_velocity = curr_velocity;
+                
+                // 閾値以下の速度は無視（意図しない小さな動きを防止）
+                const float velocity_threshold = 0.05f;
+                if (curr_velocity > velocity_threshold) {
+                    // 速度を直接スクロール量に変換するが、究極的に抑制された超低速な挙動に調整
+                    // 完全に線形なカーブを使用して加速感をなくす
+                    // 極めて低い係数により正確に距離ベースと同等の挙動を実現
+                    // 移動平均と強い指数平滑化で急激な速度変化を抑制
+                    
+                    // 速度に応じた基本的なスクロール量を計算
+                    // 基本係数 - 極限まで低減して移動距離ベースの挙動に近づける
+                    const float velocity_factor = 0.4f;  // 前回の半分にさらに抑制
+                    
+                    // 線形マッピング - 完全に線形な曲線
+                    // 指数を1.0にして、完全に線形の挙動に調整
+                    float velocity_based_amplitude = curr_velocity * velocity_factor;
+                    
+                    // 最大値の制限（過剰な加速を防止）
+                    velocity_based_amplitude = fminf(velocity_based_amplitude, 18.0f);
+                    
+                    // 最小値の設定（速度感知の最小応答を確保）
+                    velocity_based_amplitude = fmaxf(velocity_based_amplitude, 1.0f);
+                    
+                    // 方向を適用
+                    float vx = current_direction_x * velocity_based_amplitude;
+                    float vy = current_direction_y * velocity_based_amplitude;
+                    
+                    // 自然なスクロール体験のための斜め移動処理
+                    if (abs(current_direction_x) > 0 && abs(current_direction_y) > 0) {
+                        // 斜め方向の動きがある場合、優勢な方向に統合する
+                        if (abs(scroll_y) > abs(scroll_x)) {
+                            // Y方向が優勢 - X成分をY方向に転用
+                            // 水平成分は垂直スクロール値として扱う（斜め移動の総合的な効果として）
+                            vy = (vy >= 0 ? 1 : -1) * (fabs(vy) + fabs(vx));
+                            vx = 0; // 水平方向の入力は垂直方向に転用したため、リセット
+                        } else {
+                            // X方向が優勢 - Y成分をX方向に転用
+                            // 垂直成分は水平スクロール値として扱う
+                            vx = (vx >= 0 ? 1 : -1) * (fabs(vx) + fabs(vy));
+                            vy = 0; // 垂直方向の入力は水平方向に転用したため、リセット
+                        }
+                    }
+                    
+                    // オリジナルの値を速度ベースの値で置き換え
+                    scroll_x = (int16_t)vx;
+                    scroll_y = (int16_t)vy;
+                }
+#endif
                 data->scroll_last_real_movement_time = current_time;
                 
                 // 同じ方向への連続スクロールかチェック
@@ -1206,6 +1305,97 @@ static int pmw3610_report_data(const struct device *dev) {
                 }
             }
             
+#ifdef CONFIG_PMW3610_VELOCITY_BASED_SCROLLING
+            // 速度ベースのスクロールモードでは、直接スクロールイベントを生成
+            // 閾値ベースの累積ではなく、速度に基づいてイベント生成
+            if (movement_size > 0) {
+                // まず主な方向を判断（優勢方向が判断しやすいよう、わずかに垂直方向を優先）
+                bool y_is_primary = abs(scroll_y) >= abs(scroll_x);
+                
+                if (y_is_primary && scroll_y != 0) {
+                    // Y方向のスクロール
+                    int16_t scroll_direction = scroll_y > 0 ? PMW3610_SCROLL_Y_NEGATIVE : PMW3610_SCROLL_Y_POSITIVE;
+                    
+                    // スクロール量に比例したイベント数を生成
+                    // より自然でスムーズなスクロールを実現するために
+                    // 速度に直接比例する形でイベント数を決定
+                    
+                    // 基本スクロール速度を計算
+                    float scroll_y_abs = fabsf((float)scroll_y);
+                    int16_t scroll_events;
+                    
+                    // スクロール量をイベント数に変換 - トラックボールセンサー向けに調整
+                    // 超低速なイベント生成で完全に移動距離ベースに近い操作感を実現
+                    if (scroll_y_abs <= 20.0f) {
+                        // 遅い〜中程度の動き - 常に1イベントのみ
+                        // 最初の段階をさらに広げて、より多くの操作で一定速度を維持
+                        scroll_events = 1;
+                    } else if (scroll_y_abs <= 60.0f) {
+                        // やや速い動き - 極小のスケーリング（ほぼ無視できるレベル）
+                        scroll_events = (int16_t)(1.0f + (scroll_y_abs - 20.0f) * 0.003f); 
+                    } else if (scroll_y_abs <= 120.0f) {
+                        // 高速な動き - ほぼ加速なし
+                        scroll_events = (int16_t)(1.0f + (scroll_y_abs - 60.0f) * 0.002f);
+                    } else {
+                        // 非常に高速な動き - 事実上頭打ち
+                        scroll_events = (int16_t)(1.0f + (scroll_y_abs - 120.0f) * 0.001f);
+                    }
+                    
+                    // 最低1つは生成（小さな動きでも反応するように）
+                    scroll_events = scroll_events > 0 ? scroll_events : 1;
+                    
+                    // 多すぎる場合は制限 - 最大値を極限まで低減
+                    scroll_events = scroll_events > 2 ? 2 : scroll_events;
+                    
+                    // スクロールイベントを送信
+                    for (int i = 0; i < scroll_events; i++) {
+                        input_report_rel(dev, INPUT_REL_WHEEL, scroll_direction, true, K_FOREVER);
+                    }
+                    
+                    // X方向のデルタをリセット
+                    data->scroll_delta_x = 0;
+                } else if (!y_is_primary && scroll_x != 0) {
+                    // X方向のスクロール
+                    int16_t scroll_direction = scroll_x > 0 ? PMW3610_SCROLL_X_NEGATIVE : PMW3610_SCROLL_X_POSITIVE;
+                    
+                    // 同様に速度に比例したイベント数を生成
+                    float scroll_x_abs = fabsf((float)scroll_x);
+                    int16_t scroll_events;
+                    
+                    // スクロール量をイベント数に変換 - トラックボールセンサー向けに調整
+                    // 超低速なイベント生成で完全に移動距離ベースに近い操作感を実現
+                    if (scroll_x_abs <= 20.0f) {
+                        // 遅い〜中程度の動き - 常に1イベントのみ
+                        // 最初の段階をさらに広げて、より多くの操作で一定速度を維持
+                        scroll_events = 1;
+                    } else if (scroll_x_abs <= 60.0f) {
+                        // やや速い動き - 極小のスケーリング（ほぼ無視できるレベル）
+                        scroll_events = (int16_t)(1.0f + (scroll_x_abs - 20.0f) * 0.003f); 
+                    } else if (scroll_x_abs <= 120.0f) {
+                        // 高速な動き - ほぼ加速なし
+                        scroll_events = (int16_t)(1.0f + (scroll_x_abs - 60.0f) * 0.002f);
+                    } else {
+                        // 非常に高速な動き - 事実上頭打ち
+                        scroll_events = (int16_t)(1.0f + (scroll_x_abs - 120.0f) * 0.001f);
+                    }
+                    
+                    // 最低1つは生成
+                    scroll_events = scroll_events > 0 ? scroll_events : 1;
+                    
+                    // 多すぎる場合は制限 - 最大値を極限まで低減
+                    scroll_events = scroll_events > 2 ? 2 : scroll_events;
+                    
+                    // スクロールイベントを送信
+                    for (int i = 0; i < scroll_events; i++) {
+                        input_report_rel(dev, INPUT_REL_HWHEEL, scroll_direction, true, K_FOREVER);
+                    }
+                    
+                    // Y方向のデルタをリセット
+                    data->scroll_delta_y = 0;
+                }
+            }
+#else
+            // 従来の閾値ベースのスクロール（累積値が閾値を超えたらイベント生成）
             // 処理後のスクロール値を累積
             data->scroll_delta_x += scroll_x;
             data->scroll_delta_y += scroll_y;
@@ -1238,6 +1428,7 @@ static int pmw3610_report_data(const struct device *dev) {
                 data->scroll_delta_x %= CONFIG_PMW3610_SCROLL_TICK;
                 data->scroll_delta_y = 0; // Reset vertical scrolling after horizontal scroll
             }
+#endif
         }
     }
 
@@ -1322,6 +1513,14 @@ static int pmw3610_init(const struct device *dev) {
     data->scroll_missed_detection_count = 0;
     data->scroll_consistent_direction_count = 0;
     data->scroll_last_real_movement_time = 0;
+    
+#ifdef CONFIG_PMW3610_VELOCITY_BASED_SCROLLING
+    // 速度履歴配列を初期化
+    for (int i = 0; i < VELOCITY_HISTORY_SIZE; i++) {
+        data->velocity_history[i] = 0.0f;
+    }
+    data->velocity_history_index = 0;
+#endif
     
     // MOVEモードの加速変数を初期化
     data->move_acceleration = 1.0f;
