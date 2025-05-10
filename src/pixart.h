@@ -18,6 +18,7 @@ extern "C" {
 enum pixart_input_mode { 
     MOVE = 0,      // 通常の移動モード
     SCROLL,        // スクロールモード
+    SCROLL_KB,     // キーボール風スクロールモード
     SNIPE,         // 精密狙いモード
 #ifdef CONFIG_PMW3610_PROFILE_SWITCHING
     PRECISION,     // 精密作業プロファイル
@@ -47,6 +48,15 @@ struct pixart_data {
     int16_t scroll_missed_detection_count; // 連続した取りこぼし検出カウント
     int16_t scroll_consistent_direction_count; // 同一方向への連続スクロールカウント
     int64_t scroll_last_real_movement_time; // 実際の動きが最後に検出された時間
+    
+    #ifdef CONFIG_PMW3610_KEYBALL_SCROLL
+    // キーボール風スクロールのための変数
+    int64_t kb_scroll_mode_changed;      // スクロールモードが最後に変更された時間
+    uint8_t kb_scroll_div;               // スクロール除数（1-7、0は未設定）
+    int32_t kb_scroll_snap_tension_h;    // 水平スクロールの蓄積テンション
+    int32_t kb_scroll_snap_tension_v;    // 垂直スクロールの蓄積テンション
+    int64_t kb_scroll_snap_last;         // 最後のスクロールスナップ時間
+#endif
     
     // 速度ベースのスクロールのための履歴配列
     #ifdef CONFIG_PMW3610_VELOCITY_BASED_SCROLLING

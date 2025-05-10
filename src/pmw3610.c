@@ -15,12 +15,9 @@
 #include <zephyr/input/input.h>
 #include <zmk/keymap.h>
 #include "pmw3610.h"
-#include <math.h>
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(pmw3610, CONFIG_INPUT_LOG_LEVEL);
-
-#include <zephyr/sys/util.h>
 
 //////// Sensor initialization steps definition //////////
 // init is done in non-blocking manner (i.e., async), a //
@@ -569,7 +566,12 @@ static enum pixart_input_mode get_input_mode_for_current_layer(const struct devi
     uint8_t curr_layer = zmk_keymap_highest_layer_active();
     for (size_t i = 0; i < config->scroll_layers_len; i++) {
         if (curr_layer == config->scroll_layers[i]) {
+#ifdef CONFIG_PMW3610_KEYBALL_SCROLL
+            // カスタムスクロールモードが有効の場合はSCROLL_KBを返す
+            return SCROLL_KB;
+#else
             return SCROLL;
+#endif
         }
     }
     for (size_t i = 0; i < config->snipe_layers_len; i++) {
@@ -584,10 +586,14 @@ static enum pixart_input_mode get_input_mode_for_current_layer(const struct devi
 // AUTOMOUSE_LAYER有効時にマウスレイヤーの有効を精密に判定するためのグローバル変数
 static int16_t g_movement_accumulator = 0;
 static int64_t g_last_movement_time = 0;
-// センサーの生の値を保存するための変数を追加
-static int16_t g_raw_movement_accumulator = 0;
 
 static int pmw3610_report_data(const struct device *dev) {
+#ifdef CONFIG_PMW3610_KEYBALL_SCROLL
+#ifndef TIMER_DIFF_32
+#define TIMER_DIFF_32(a, b) ((uint32_t)MAX(((a) - (b)), 0))
+#endif
+#endif
+
     struct pixart_data *data = dev->data;
     uint8_t buf[PMW3610_BURST_SIZE];
 
@@ -603,39 +609,26 @@ static int pmw3610_report_data(const struct device *dev) {
     case MOVE:
         set_cpi_if_needed(dev, CONFIG_PMW3610_CPI);
         dividor = CONFIG_PMW3610_CPI_DIVIDOR;
-        if (input_mode_changed) {
-            // 前のモードからMOVEモードに切り替わった場合は累積値をリセットするが、
-            // AMLの状態は維持する（automouse_triggered はリセットしない）
-            g_movement_accumulator = 0;
-            g_raw_movement_accumulator = 0;
-            // g_last_movement_time は更新しない - これにより前のモードでの最後の動きからの時間が計測され、
-            // すぐにAMLのチェックが行われる
-            
-            // MOVEモード加速変数をリセット
-            data->move_acceleration = 1.0f;
-            data->move_consecutive_movements = 0;
-            data->move_last_movement_time = 0;
-            data->move_prev_movement_velocity = 0.0f;
-        }
         break;
     case SCROLL:
         set_cpi_if_needed(dev, CONFIG_PMW3610_CPI);
         if (input_mode_changed) {
             data->scroll_delta_x = 0;
             data->scroll_delta_y = 0;
-            data->scroll_acceleration = 1.0f;
-            data->scroll_consecutive_movements = 0;
-            data->scroll_last_movement_time = 0;
-            
-            // スクロール補間変数もリセット
-            data->scroll_last_direction_x = 0;
-            data->scroll_last_direction_y = 0;
-            data->scroll_missed_detection_count = 0;
-            data->scroll_consistent_direction_count = 0;
-            data->scroll_last_real_movement_time = 0;
         }
-        dividor = CONFIG_PMW3610_SCROLL_DIVIDOR; // スクロールモード専用のdividor値を使用
+        dividor = 1; // this should be handled with the ticks rather than dividors
         break;
+#ifdef CONFIG_PMW3610_KEYBALL_SCROLL
+    case SCROLL_KB:
+        set_cpi_if_needed(dev, CONFIG_PMW3610_CPI);
+        if (input_mode_changed) {
+            data->kb_scroll_mode_changed = k_uptime_get();
+            data->kb_scroll_snap_tension_h = 0;
+            data->kb_scroll_snap_tension_v = 0;
+        }
+        dividor = 1; // スクロール除数は後で適用
+        break;
+#endif
     case SNIPE:
         set_cpi_if_needed(dev, CONFIG_PMW3610_SNIPE_CPI);
         dividor = CONFIG_PMW3610_SNIPE_CPI_DIVIDOR;
@@ -659,9 +652,6 @@ static int pmw3610_report_data(const struct device *dev) {
     int16_t raw_y =
         TOINT16((buf[PMW3610_Y_L_POS] + ((buf[PMW3610_XY_H_POS] & 0x0F) << 8)), 12) / dividor;
 
-    // センサーからの生の動きの値を計算（変換前）
-    const int16_t raw_movement = abs(raw_x) + abs(raw_y);
-
     if (IS_ENABLED(CONFIG_PMW3610_ORIENTATION_0)) {
         x = -raw_x;
         y = raw_y;
@@ -684,71 +674,10 @@ static int pmw3610_report_data(const struct device *dev) {
         y = -y;
     }
 
-#ifdef CONFIG_PMW3610_SMOOTHING_FILTER
-    // 平滑化フィルターの適用
-    if (data->ready) { // 初期化後のみ適用
-        // スムージングの重み付け係数 (0-90%)
-        const float weight = data->current_smoothing_weight / 100.0f;
-        
-        // CPIに基づく調整係数を計算（800dpiを基準）
-        float cpi_factor = 800.0f / CONFIG_PMW3610_CPI;
-        
-        // 移動量の大きさに基づいて適応的に重みを調整
-        // 大きな動きには少ない重みを適用し、小さな動きには大きな重みを適用
-        int16_t movement_size = abs(x) + abs(y);
-        float adaptive_weight = weight;
-        
-        // CPIに応じて閾値を調整
-        int16_t large_movement_threshold = (int16_t)(20 * cpi_factor);
-        int16_t medium_movement_threshold = (int16_t)(10 * cpi_factor);
-        
-        if (movement_size > large_movement_threshold) {
-            // 大きな動きの場合は重みを下げる（より即応的に）
-            adaptive_weight = weight * 0.5f;
-        } else if (movement_size > medium_movement_threshold) {
-            // 中程度の動きの場合は重みを少し下げる
-            adaptive_weight = weight * 0.7f;
-        }
-        
-        // 初回の動きの場合は平滑化をスキップ
-        if (data->prev_x == 0 && data->prev_y == 0 && (x != 0 || y != 0)) {
-            // 値を記録するだけで平滑化はスキップ
-            data->prev_x = x;
-            data->prev_y = y;
-        } else {
-            // 指数移動平均を適用
-            int16_t smoothed_x = (int16_t)(adaptive_weight * data->prev_x + (1.0f - adaptive_weight) * x);
-            int16_t smoothed_y = (int16_t)(adaptive_weight * data->prev_y + (1.0f - adaptive_weight) * y);
-            
-            // 非常に小さな動きはノイズと見なして抑制
-            if (abs(x) <= 1 && abs(data->prev_x) <= 1) {
-                smoothed_x = 0;
-            }
-            if (abs(y) <= 1 && abs(data->prev_y) <= 1) {
-                smoothed_y = 0;
-            }
-            
-            // 前回の値を更新
-            data->prev_x = x;
-            data->prev_y = y;
-            
-            // 平滑化された値で置き換え
-            x = smoothed_x;
-            y = smoothed_y;
-        }
-    }
-#endif
-
 #if AUTOMOUSE_LAYER > 0
     // 利用側のCPI設定値に依存せずに、 PMW3610_AUTOMOUSE_PIXEL_THRESHOLD で設定したピクセル相当の移動を検出するための閾値を計算
     // static const int16_t MOVEMENT_THRESHOLD = ceil(CONFIG_PMW3610_AUTOMOUSE_PIXEL_THRESHOLD / CONFIG_PMW3610_CPI / CONFIG_PMW3610_CPI_DIVIDOR * 1000);
     static const int16_t MOVEMENT_THRESHOLD = CONFIG_PMW3610_MOVEMENT_THRESHOLD;
-    static const int64_t ACCUMULATION_TIME_MS = CONFIG_PMW3610_MOVEMENT_ACCUMULATION_TIME_MS;
-    
-    // CPIに基づく調整係数を計算
-    static const float CPI_SCALING_FACTOR = 800.0f / CONFIG_PMW3610_CPI;
-    // CPI値が低いほど、raw_movementの閾値係数を小さくする（より敏感に）
-    static const int16_t RAW_THRESHOLD_MULTIPLIER = CPI_SCALING_FACTOR < 1.0f ? 2 : (int16_t)(2 * CPI_SCALING_FACTOR);
 
     if (input_mode == MOVE) {
         const int16_t movement_size = abs(x) + abs(y);
@@ -756,53 +685,33 @@ static int pmw3610_report_data(const struct device *dev) {
         int64_t current_time = k_uptime_get();
         // 前回の有効な動きからの経過時間を計算
         int64_t time_since_last_movement = current_time - g_last_movement_time;
-        
-        // 移動量を累積（通常の処理後の値と生の値の両方を累積）
+        // 移動量を累積
         g_movement_accumulator += movement_size;
-        g_raw_movement_accumulator += raw_movement;
-        
-        // すでにAMLが有効であり、かつ大きな動きがある場合はタイマーを延長する
-        // 絶対値が一定以上あれば継続的にタイマーをリセット
-        if (automouse_triggered && (movement_size > 2 || raw_movement > 2)) {
-            // タイマーを停止して再開始 = タイマーのリセット
-            k_timer_stop(&automouse_layer_timer);
-            k_timer_start(&automouse_layer_timer, K_MSEC(CONFIG_PMW3610_AUTOMOUSE_TIMEOUT_MS), K_NO_WAIT);
-        }
 
-        // トラックボールの動きに関するデバッグ情報をログに出力
-        /* if (raw_movement > 0 || movement_size > 0) {
-            LOG_INF("Movement: processed=%d, raw=%d, acc=%d, raw_acc=%d, threshold=%d, raw_mult=%d", 
-                    movement_size, raw_movement, g_movement_accumulator, 
-                    g_raw_movement_accumulator, MOVEMENT_THRESHOLD, RAW_THRESHOLD_MULTIPLIER);
-        } */
-
-        // モード切替直後または指定時間が経過したらチェックとリセットを行う
-        bool just_switched_mode = input_mode_changed;
-        if (just_switched_mode || time_since_last_movement >= ACCUMULATION_TIME_MS) {
-            // 通常の閾値チェックか生の動き値のチェックのどちらかで条件を満たせばレイヤーをアクティブにする
-            // SCROLLモードとMOVEモード間の切り替えでもAMLタイマーを維持するため、
-            // automouse_triggered が true（AMLがすでにアクティブ）でもレイヤーが違えば再アクティブ化する
-            
-            // モード切替直後はトラックボールの動き値の閾値を無視して強制的にAMLをアクティブにする
-            bool should_activate = just_switched_mode || 
-                ((g_movement_accumulator > MOVEMENT_THRESHOLD || 
-                 g_raw_movement_accumulator > MOVEMENT_THRESHOLD * RAW_THRESHOLD_MULTIPLIER));
-                
-            if (should_activate && zmk_keymap_highest_layer_active() != AUTOMOUSE_LAYER) {
-                activate_automouse_layer();
-                
-                /* LOG_INF("Activating mouse layer: acc=%d, raw_acc=%d, thresh=%d, raw_thresh=%d", 
-                        g_movement_accumulator, g_raw_movement_accumulator, 
-                        MOVEMENT_THRESHOLD, MOVEMENT_THRESHOLD * RAW_THRESHOLD_MULTIPLIER); */
-            }
-            
-            // 累積値をリセット
+        if (time_since_last_movement > 100 &&
+            g_movement_accumulator > MOVEMENT_THRESHOLD &&
+            (automouse_triggered || zmk_keymap_highest_layer_active() != AUTOMOUSE_LAYER)
+        ) {
+            activate_automouse_layer();
             g_last_movement_time = current_time;
             g_movement_accumulator = 0;
-            g_raw_movement_accumulator = 0;
+        }
+
+        // 一定時間経過後は累積値をリセット
+        if (time_since_last_movement >= 100) {
+            g_last_movement_time = current_time;
+            g_movement_accumulator = 0;
         }
     }
 #endif
+// #if AUTOMOUSE_LAYER > 0
+//     if (input_mode == MOVE &&
+//         (automouse_triggered || zmk_keymap_highest_layer_active() != AUTOMOUSE_LAYER) &&
+//         (abs(x) + abs(y) > CONFIG_PMW3610_MOVEMENT_THRESHOLD)
+//     ) {
+//         activate_automouse_layer();
+//     }
+// #endif
 
 #ifdef CONFIG_PMW3610_SMART_ALGORITHM
     int16_t shutter =
@@ -821,91 +730,27 @@ static int pmw3610_report_data(const struct device *dev) {
 #endif
 
 #ifdef CONFIG_PMW3610_ADJUSTABLE_MOUSESPEED
-    // 動きの大きさを計算
     int16_t movement_size = abs(raw_x) + abs(raw_y);
 
-    // 高度な適応型加速度制御を実装（スクロールモードと類似の手法）
-    
-    // 現在の時間を取得
-    int64_t current_time = k_uptime_get();
-    
-    // 時間差を計算（ミリ秒）
-    int64_t time_diff = current_time - data->move_last_movement_time;
-    
-    // 速度計算用のパラメータ
-    int64_t velocity_time_window = 100; // 速度計算の時間窓 (ms)
-    float movement_velocity = 0.0f;
-    
-    // 単位時間あたりの動き量（速度）を計算
-    if (movement_size > 0) {
-        if (time_diff > 0 && time_diff < velocity_time_window) {
-            movement_velocity = (float)movement_size / (float)time_diff * 50.0f;
-        }
-        
-        // 連続動作カウントを増加
-        if (data->move_last_movement_time > 0 && time_diff < 500) {
-            data->move_consecutive_movements++;
-        } else {
-            // 長時間動きがなかった場合はリセット
-            data->move_consecutive_movements = 1;
-        }
-        
-        // 速度の指数平滑化（急激な変化を抑制）
-        if (data->move_prev_movement_velocity > 0) {
-            // 前回の速度と今回の速度を混合（80%:20%の比率）
-            movement_velocity = data->move_prev_movement_velocity * 0.8f + movement_velocity * 0.2f;
-        }
-        data->move_prev_movement_velocity = movement_velocity;
-        
-        // シグモイド関数のための入力値を計算
-        float sigmoid_input = (data->move_consecutive_movements - 5) / 100.0f;
-        sigmoid_input += movement_velocity / 30.0f; // 速度の影響を加える
-        
-        // -6〜6の範囲に制限（シグモイド関数の有効範囲）
-        sigmoid_input = fmaxf(-6.0f, fminf(6.0f, sigmoid_input));
-        
-        // シグモイド関数による0〜1の出力を計算（滑らかなS字カーブ）
-        float sigmoid_output = 1.0f / (1.0f + expf(-sigmoid_input));
-        
-        // 基本値と最大値のパラメータ設定
-        float base_multiplier = 0.8f; // 最低倍率（小さな動きでの精度のため1.0未満）
-        float max_multiplier = 3.0f;  // 最大倍率
-        
-        // 最終的な速度乗数を計算
-        float target_multiplier = base_multiplier + (max_multiplier - base_multiplier) * sigmoid_output;
-        
-        // 現在値から目標値へ、小さなステップで調整する（滑らかな変化のため）
-        float step_size = fmaxf(0.005f, fminf(0.02f, movement_velocity / 150.0f));
-        
-        if (target_multiplier > data->move_acceleration) {
-            data->move_acceleration += step_size;
-        } else if (target_multiplier < data->move_acceleration) {
-            // 減速も許可
-            data->move_acceleration -= step_size * 0.5f; // 減速は加速よりゆっくり
-        }
-        
-        // 加速度の範囲を制限
-        data->move_acceleration = fmaxf(base_multiplier, fminf(max_multiplier, data->move_acceleration));
-        
-        // 時間情報を更新
-        data->move_last_movement_time = current_time;
-    } else if (time_diff > 500) {
-        // 長時間動きがない場合、加速度を徐々に下げる
-        data->move_acceleration = fmaxf(1.0f, data->move_acceleration * 0.95f);
-        
-        if (time_diff > 1000) {
-            // 1秒以上動きがない場合、完全にリセット
-            data->move_acceleration = 1.0f;
-            data->move_consecutive_movements = 0;
-        }
+    float speed_multiplier = 1.0; //速度の倍率
+    if (movement_size > 60) {
+        speed_multiplier = 3.0;
+    }else if (movement_size > 30) {
+        speed_multiplier = 1.5;
+    }else if (movement_size > 5) {
+        speed_multiplier = 1.0;
+    }else if (movement_size > 4) {
+        speed_multiplier = 0.9;
+    }else if (movement_size > 3) {
+        speed_multiplier = 0.7;
+    }else if (movement_size > 2) {
+        speed_multiplier = 0.5;
+    }else if (movement_size > 1) {
+        speed_multiplier = 0.1;
     }
-    
-    // 最終的な加速度を適用
-    float speed_multiplier = data->move_acceleration;
-    
-    // 最終的な座標値を計算
-    raw_x = (int16_t)(raw_x * speed_multiplier);
-    raw_y = (int16_t)(raw_y * speed_multiplier);
+
+    raw_x = raw_x * speed_multiplier;
+    raw_y = raw_y * speed_multiplier;
 
 #endif
 
@@ -915,567 +760,113 @@ static int pmw3610_report_data(const struct device *dev) {
         data->last_poll_time = curr_time;
         data->last_x = x;
         data->last_y = y;
-        
-        // ポーリングレート制限時にも生の動きを累積するために保存
-#if AUTOMOUSE_LAYER > 0
-        if (input_mode == MOVE) {
-            // 次回の呼び出し時まで生の動きの累積値を保持
-            data->last_raw_movement = raw_movement;
-        }
-#endif
-        
         return 0;
     } else {
         x += data->last_x;
         y += data->last_y;
-        
-#if AUTOMOUSE_LAYER > 0
-        if (input_mode == MOVE) {
-            // 保存していた生の動きの値を現在の累積値に加算
-            g_raw_movement_accumulator += data->last_raw_movement;
-        }
-#endif
-        
         data->last_poll_time = 0;
         data->last_x = 0;
         data->last_y = 0;
-        data->last_raw_movement = 0;
     }
 #endif
 
     if (x != 0 || y != 0) {
-        // if (input_mode == MOVE) {
-        uint32_t current_cpi = CONFIG_PMW3610_CPI;
-        uint32_t target_cpi = CONFIG_PMW3610_TARGET_CPI;
-        uint32_t scaling_ratio = 1;
-
-        if (IS_ENABLED(CONFIG_PMW3610_DPI_SCALING)) {
-            scaling_ratio = target_cpi / current_cpi;
-        }
-
-        // スケーリングを適用
-        if (current_cpi > 0) {
-            x = x * scaling_ratio;
-            y = y * scaling_ratio;
-        }
-        // }
-        if (input_mode != SCROLL) {
+        if (input_mode != SCROLL && input_mode != SCROLL_KB) {
+// #if AUTOMOUSE_LAYER > 0
+//             // トラックボールの動きの大きさを計算
+//             int16_t movement_size = abs(x) + abs(y);
+//             if (input_mode == MOVE &&
+//                 (automouse_triggered || zmk_keymap_highest_layer_active() != AUTOMOUSE_LAYER) &&
+//                 movement_size > CONFIG_PMW3610_MOVEMENT_THRESHOLD) {
+//                 activate_automouse_layer();
+//             }
+// #endif
             input_report_rel(dev, INPUT_REL_X, x, false, K_FOREVER);
             input_report_rel(dev, INPUT_REL_Y, y, true, K_FOREVER);
-        } else {
-            // Calculate scroll values
-            int16_t scroll_x = x;
-            int16_t scroll_y = y;
-            
-            // 動きの大きさを計算
-            int16_t movement_size = abs(x) + abs(y);
-            
-            // 加速ロジックはどんな場合でも適用（CONFIG_PMW3610_ADJUSTABLE_SCROLLSPEEDなくても適用）
-            // 現在の時間を取得
-            int64_t current_time = k_uptime_get();
-            
-            // 加速度計算のための時間差を計算（ミリ秒）
-            int64_t time_diff = current_time - data->scroll_last_movement_time;
-            
-            // 加速ロジック
-            if (movement_size > 0) {
-                // 閾値以上の動きがある場合
-                if (data->scroll_last_movement_time > 0 && time_diff < 500) {
-                    // 前回の動きから500ms以内の場合、加速を徐々に増加
-                    data->scroll_consecutive_movements++;
-                    
-                    // 高度な適応型加速度制御を実装
-                    
-                    // 1. 動きの速度（速さ）を計算 - スクロール体験の自然さの鍵となる要素
-                    int64_t velocity_time_window = 100; // 速度計算の時間窓 (ms)
-                    float movement_velocity = 0.0f;
-                    
-                    // 現在の動きの速度を計算（最近のN回の動きの累積を時間で割る）
-                    if (time_diff > 0 && time_diff < velocity_time_window) {
-                        // 単位時間あたりの動き量（速度）を計算
-                        movement_velocity = (float)movement_size / (float)time_diff * 50.0f;
-                    }
-                    
-                    // 速度の指数平滑化 - 突然の変化を抑え、徐々に追従
-                    if (data->scroll_prev_movement_velocity > 0) {
-                        // 前回の速度と今回の速度を混合（80%:20%の比率）
-                        movement_velocity = data->scroll_prev_movement_velocity * 0.8f + movement_velocity * 0.2f;
-                    }
-                    data->scroll_prev_movement_velocity = movement_velocity;
-                    
-                    // 2. 加速度曲線の適用 - 非線形な曲線でより自然な加速を実現
-                    float base_acceleration = 1.0f;
-                    float max_acceleration = 4.0f;
-                    
-                    // 非線形シグモイド関数による加速度マッピング
-                    // シグモイド関数: 1 / (1 + e^(-x)) は滑らかなS字カーブを生成
-                    if (data->scroll_consecutive_movements > 5) {
-                        // シグモイド関数のための入力値を計算
-                        // 連続動作回数と動きの速度の両方を考慮
-                        float sigmoid_input = (data->scroll_consecutive_movements - 5) / 80.0f;
-                        sigmoid_input += movement_velocity / 50.0f; // 速度の影響を加える
-                        
-                        // -6〜6の範囲に制限（シグモイド関数の有効範囲）
-                        sigmoid_input = fmaxf(-6.0f, fminf(6.0f, sigmoid_input));
-                        
-                        // シグモイド関数による0〜1の出力
-                        float sigmoid_output = 1.0f / (1.0f + expf(-sigmoid_input));
-                        
-                        // 目標加速度を基本〜最大の間でマッピング
-                        float target_acceleration = base_acceleration + 
-                                                  (max_acceleration - base_acceleration) * sigmoid_output;
-                        
-                        // 現在の加速度から目標加速度へ非常に小さなステップで近づける
-                        // ステップサイズは現在の速度に応じて調整（速いほど大きく、遅いほど小さく）
-                        float step_size = fmaxf(0.002f, fminf(0.01f, movement_velocity / 200.0f));
-                        
-                        if (target_acceleration > data->scroll_acceleration) {
-                            data->scroll_acceleration += step_size;
-                        } else if (target_acceleration < data->scroll_acceleration) {
-                            // 減速も許可 - これが高品質なスクロール体験において重要
-                            data->scroll_acceleration -= step_size * 0.5f; // 減速は加速よりゆっくり
-                        }
-                        
-                        // 加速度の範囲を制限
-                        data->scroll_acceleration = fmaxf(base_acceleration, 
-                                                    fminf(max_acceleration, data->scroll_acceleration));
-                    } else {
-                        // 最初の数回は基本速度（加速なし）
-                        data->scroll_acceleration = base_acceleration;
-                    }
-                } else {
-                    // 長時間動きがなかった場合、加速度をリセット
-                    data->scroll_acceleration = 1.0f;
-                    data->scroll_consecutive_movements = 1;
-                }
-                
-                // 動きの大きさにも加速度を調整
-                float size_factor = 1.0f;
-                
-#ifdef CONFIG_PMW3610_ADJUSTABLE_SCROLLSPEED
-                // 動きの大きさに基づいた追加の調整
-                if (movement_size > 90) {
-                    size_factor = 2.5f; // 非常に大きな動きの場合
-                } else if (movement_size > 60) {
-                    size_factor = 2.0f; // 大きな動きの場合
-                } else if (movement_size > 30) {
-                    size_factor = 1.5f; // 中程度の動きの場合
-                } else if (movement_size > 15) {
-                    size_factor = 1.2f; // 小さめの動きの場合
-                }
-#endif
-                
-                // 最終的な加速率を計算（時間ベースの加速と動きの大きさベースの加速を組み合わせる）
-                float final_acceleration = data->scroll_acceleration * size_factor;
-                
-                // スクロール値に加速を適用
-                scroll_x = (int16_t)(scroll_x * final_acceleration);
-                scroll_y = (int16_t)(scroll_y * final_acceleration);
-                
-                // LOG_INF("Scroll accel: %d movements, accel=%.2f, size=%d, final=%.2f", 
-                //         data->scroll_consecutive_movements, 
-                //         (double)data->scroll_acceleration,
-                //         movement_size,
-                //         (double)final_acceleration);
-                
-                // 時間と動きのサイズを更新
-                data->scroll_last_movement_time = current_time;
-                data->scroll_prev_movement_size = movement_size;
-            } else if (time_diff > 500) {
-                // 500ms以上動きがない場合、加速度を徐々に減少
-                data->scroll_acceleration = fmaxf(1.0f, data->scroll_acceleration * 0.95f);
-                
-                if (time_diff > 1000) {
-                    // 1秒以上動きがない場合、完全にリセット
-                    data->scroll_acceleration = 1.0f;
-                    data->scroll_consecutive_movements = 0;
-                }
-            }
-            
-            // 取りこぼし検出のための方向検出と状態更新
-            int16_t current_direction_x = (scroll_x > 0) ? 1 : ((scroll_x < 0) ? -1 : 0);
-            int16_t current_direction_y = (scroll_y > 0) ? 1 : ((scroll_y < 0) ? -1 : 0);
-            
-            // スクロール動作がある場合、実際の動き時間を更新し、方向情報を記録
-            if (movement_size > 0) {
-                
-#ifdef CONFIG_PMW3610_VELOCITY_BASED_SCROLLING
-                // 速度ベースのスクロールを実装（トラックパッドのような動作）
-                // 物理的な移動距離ではなく、動きの速度に基づいてスクロール量を計算
-                
-                // 現在の速度を計算
-                float curr_velocity = 0.0f;
-                if (time_diff > 0 && time_diff <= 100) {
-                    // 単位時間あたりの動きを計算（速度）
-                    curr_velocity = (float)movement_size / (float)time_diff;
-                }
-                
-                // 新しい速度を履歴に追加
-                data->velocity_history[data->velocity_history_index] = curr_velocity;
-                data->velocity_history_index = (data->velocity_history_index + 1) % VELOCITY_HISTORY_SIZE;
-                
-                // 移動平均を計算（急激な変動を抑制）
-                float velocity_sum = 0;
-                int valid_samples = 0;
-                for (int i = 0; i < VELOCITY_HISTORY_SIZE; i++) {
-                    if (data->velocity_history[i] > 0) {
-                        velocity_sum += data->velocity_history[i];
-                        valid_samples++;
-                    }
-                }
-                
-                // 有効なサンプルがある場合のみ平均を計算
-                if (valid_samples > 0) {
-                    curr_velocity = velocity_sum / valid_samples;
-                }
-                
-                // 極限まで緩やかな加速曲線を適用するための指数平滑化
-                if (data->scroll_prev_movement_velocity > 0) {
-                    // 前回の値との混合（滑らかな変化のため）
-                    // 極限まで強い重み付けで前回の値を優先（ほぼ変化なし）
-                    curr_velocity = data->scroll_prev_movement_velocity * 0.985f + curr_velocity * 0.015f;
-                    
-                    // 前回より速くなる場合は加速を極端に抑制
-                    if (curr_velocity > data->scroll_prev_movement_velocity) {
-                        // 加速をさらに抑制する（増加量の99%を削減 - 事実上加速しない）
-                        float increase = curr_velocity - data->scroll_prev_movement_velocity;
-                        curr_velocity = data->scroll_prev_movement_velocity + (increase * 0.01f);
-                        
-                        // さらに、前回値から最大増加量に上限を設ける（段階的な加速を防止）
-                        float max_increase = 0.005f; // 一度に増加できる最大値をさらに極小に
-                        if (increase * 0.01f > max_increase) {
-                            curr_velocity = data->scroll_prev_movement_velocity + max_increase;
-                        }
-                    }
-                }
-                data->scroll_prev_movement_velocity = curr_velocity;
-                
-                // 閾値以下の速度は無視（意図しない小さな動きを防止）
-                const float velocity_threshold = 0.05f;
-                if (curr_velocity > velocity_threshold) {
-                    // 速度を直接スクロール量に変換するが、究極的に抑制された超低速な挙動に調整
-                    // 対数曲線的な加速を適用して、速い動きでも急激な加速を防止
-                    
-                    // 速度に応じた基本的なスクロール量を計算
-                    // 基本係数をさらに低減して加速を限りなく小さく
-                    const float velocity_factor = 0.15f;  // さらに強く抑制
-                    
-                    // 極めて平坦な対数曲線を使用（ほぼ線形に近い極小の傾き）
-                    // 対数の係数をさらに小さくして、曲線の傾きを限りなく緩やかに
-                    float velocity_based_amplitude = velocity_factor * (1.0f + logf(1.0f + curr_velocity * 0.3f));
-                    
-                    // 連続動作の時間に応じた加速度制御を極限まで強化
-                    // 連続カウントが少ない場合は加速を完全に抑制
-                    if (data->scroll_consecutive_movements < 70) {
-                        // 連続動作回数が70未満は常に最小値に制限（閾値を極限まで引き上げ）
-                        velocity_based_amplitude = 1.0f;
-                    } else if (data->scroll_consecutive_movements < 150) {
-                        // 70〜150回の間は極限まで緩やかに増加
-                        float dampen_factor = (data->scroll_consecutive_movements - 70.0f) / 80.0f;
-                        float base_amplitude = velocity_based_amplitude;
-                        
-                        // 五次曲線で極限の極限まで緩やかに増加
-                        // x^5の曲線は原点付近が完全に水平に近く、X軸にほぼ沿うように進む
-                        dampen_factor = dampen_factor * dampen_factor * dampen_factor * dampen_factor * dampen_factor; // 五乗で超超超緩やか
-                        velocity_based_amplitude = 1.0f + (base_amplitude - 1.0f) * dampen_factor;
-                    }
-                    
-                    // 最大値の制限（過剰な加速を防止）- 最小限の上限に
-                    velocity_based_amplitude = fminf(velocity_based_amplitude, 2.0f);
-                    
-                    // 最小値の設定（速度感知の最小応答を確保）
-                    velocity_based_amplitude = fmaxf(velocity_based_amplitude, 1.0f);
-                    
-                    // 方向を適用
-                    float vx = current_direction_x * velocity_based_amplitude;
-                    float vy = current_direction_y * velocity_based_amplitude;
-                    
-                    // 自然なスクロール体験のための斜め移動処理
-                    if (abs(current_direction_x) > 0 && abs(current_direction_y) > 0) {
-                        // 斜め方向の動きがある場合、優勢な方向に統合する
-                        if (abs(scroll_y) > abs(scroll_x)) {
-                            // Y方向が優勢 - X成分をY方向に転用
-                            // 水平成分は垂直スクロール値として扱う（斜め移動の総合的な効果として）
-                            vy = (vy >= 0 ? 1 : -1) * (fabs(vy) + fabs(vx));
-                            vx = 0; // 水平方向の入力は垂直方向に転用したため、リセット
-                        } else {
-                            // X方向が優勢 - Y成分をX方向に転用
-                            // 垂直成分は水平スクロール値として扱う
-                            vx = (vx >= 0 ? 1 : -1) * (fabs(vx) + fabs(vy));
-                            vy = 0; // 垂直方向の入力は水平方向に転用したため、リセット
-                        }
-                    }
-                    
-                    // オリジナルの値を速度ベースの値で置き換え
-                    scroll_x = (int16_t)vx;
-                    scroll_y = (int16_t)vy;
-                }
-#endif
-                data->scroll_last_real_movement_time = current_time;
-                
-                // 同じ方向への連続スクロールかチェック
-                if ((current_direction_x == data->scroll_last_direction_x && current_direction_x != 0) ||
-                    (current_direction_y == data->scroll_last_direction_y && current_direction_y != 0)) {
-                    data->scroll_consistent_direction_count++;
-                } else {
-                    // 方向が変わったらリセット
-                    data->scroll_consistent_direction_count = 1;
-                }
-                
-                // 方向情報を更新
-                data->scroll_last_direction_x = current_direction_x;
-                data->scroll_last_direction_y = current_direction_y;
-                
-                // 取りこぼしカウントをリセット
-                data->scroll_missed_detection_count = 0;
-            } else {
-                // 動きがない場合、取りこぼし検出ロジックを適用
-                
-                // 前回の実際の動きからの経過時間
-                int64_t time_since_real_movement = current_time - data->scroll_last_real_movement_time;
-                
-                // 取りこぼし条件：
-                // 1. 前回の動きから短時間（150ms以内）である
-                // 2. 連続した同方向スクロールが一定回数（3回以上）ある
-                // 3. 取りこぼしカウントが閾値（5回）以下である
-                if (time_since_real_movement < 150 && 
-                    data->scroll_consistent_direction_count >= 3 && 
-                    data->scroll_missed_detection_count < 5) {
-                    
-                    // 取りこぼしと判断、前回の方向に基づいて補間値を生成
-                    // 補間強度は取りこぼし回数に応じて減衰
-                    float interpolation_factor = 1.0f - (data->scroll_missed_detection_count * 0.15f);
-                    
-                    // 補間値を計算（前回の方向 * 前回の速度の一部 * 減衰係数）
-                    if (data->scroll_last_direction_x != 0) {
-                        scroll_x = data->scroll_last_direction_x * 
-                                  (data->scroll_prev_movement_velocity * 0.3f) * 
-                                  interpolation_factor;
-                    }
-                    
-                    if (data->scroll_last_direction_y != 0) {
-                        scroll_y = data->scroll_last_direction_y * 
-                                  (data->scroll_prev_movement_velocity * 0.3f) * 
-                                  interpolation_factor;
-                    }
-                    
-                    // 取りこぼしカウントを増加
-                    data->scroll_missed_detection_count++;
-                    
-                    // ログデータ（デバッグ時のみ有効にする）
-                    // LOG_DBG("Interpolated scroll: x=%d, y=%d, factor=%.2f", 
-                    //       (int)scroll_x, (int)scroll_y, (double)interpolation_factor);
-                } else if (time_since_real_movement >= 150) {
-                    // 長時間動きがなければ本当に停止したと判断
-                    data->scroll_consistent_direction_count = 0;
-                    data->scroll_missed_detection_count = 0;
-                }
-            }
-            
-            // スクロール方向の変化を検出
-            int16_t prev_delta_sign_x = data->scroll_delta_x > 0 ? 1 : (data->scroll_delta_x < 0 ? -1 : 0);
-            int16_t prev_delta_sign_y = data->scroll_delta_y > 0 ? 1 : (data->scroll_delta_y < 0 ? -1 : 0);
-            int16_t curr_scroll_sign_x = scroll_x > 0 ? 1 : (scroll_x < 0 ? -1 : 0);
-            int16_t curr_scroll_sign_y = scroll_y > 0 ? 1 : (scroll_y < 0 ? -1 : 0);
-            
-            // 方向が逆転した場合は累積値をリセット
-            // X方向のチェック（X方向にスクロールがあり、かつ前回の累積と逆方向の場合）
-            if (curr_scroll_sign_x != 0 && prev_delta_sign_x != 0 && curr_scroll_sign_x != prev_delta_sign_x) {
+        } else if (input_mode == SCROLL) {
+            // 従来のスクロールモード
+            data->scroll_delta_x += x;
+            data->scroll_delta_y += y;
+            if (abs(data->scroll_delta_y) > CONFIG_PMW3610_SCROLL_TICK) {
+                input_report_rel(dev, INPUT_REL_WHEEL,
+                                 data->scroll_delta_y > 0 ? PMW3610_SCROLL_Y_NEGATIVE : PMW3610_SCROLL_Y_POSITIVE,
+                                 true, K_FOREVER);
                 data->scroll_delta_x = 0;
-                // LOG_DBG("X direction reversed, resetting delta");
-            }
-            
-            // Y方向のチェック（Y方向にスクロールがあり、かつ前回の累積と逆方向の場合）
-            if (curr_scroll_sign_y != 0 && prev_delta_sign_y != 0 && curr_scroll_sign_y != prev_delta_sign_y) {
                 data->scroll_delta_y = 0;
-                // LOG_DBG("Y direction reversed, resetting delta");
+            } else if (abs(data->scroll_delta_x) > CONFIG_PMW3610_SCROLL_TICK) {
+                input_report_rel(dev, INPUT_REL_HWHEEL,
+                                 data->scroll_delta_x > 0 ? PMW3610_SCROLL_X_NEGATIVE : PMW3610_SCROLL_X_POSITIVE,
+                                 true, K_FOREVER);
+                data->scroll_delta_x = 0;
+                data->scroll_delta_y = 0;
+            }
+        } 
+#ifdef CONFIG_PMW3610_KEYBALL_SCROLL
+        else if (input_mode == SCROLL_KB) {
+            // キーボール風スクロールモード
+            // モード変更直後の動きを抑制
+            int64_t curr_time = k_uptime_get();
+            if (TIMER_DIFF_32(curr_time, data->kb_scroll_mode_changed) < CONFIG_PMW3610_KB_SCROLLBALL_INHIBITOR) {
+                return err;
+            }
+
+            // スクロール除数の適用（1/2^(除数-1)）
+            uint8_t div = data->kb_scroll_div == 0 ? 
+                          CONFIG_PMW3610_KB_SCROLL_DIV_DEFAULT : 
+                          data->kb_scroll_div;
+            div = (div < PMW3610_KB_SCROLL_DIV_MIN) ? PMW3610_KB_SCROLL_DIV_MIN : 
+                 ((div > PMW3610_KB_SCROLL_DIV_MAX) ? PMW3610_KB_SCROLL_DIV_MAX : div);
+            
+            div = div - 1;
+            int16_t processed_x = x >> div;
+            int16_t processed_y = y >> div;
+            
+            int8_t wheel_h = 0;
+            int8_t wheel_v = 0;
+
+#ifdef CONFIG_PMW3610_KB_SCROLLSNAP_ENABLE
+            // スクロールスナップ機能
+            data->kb_scroll_snap_last = curr_time;
+            
+            // テンション蓄積ロジック
+            data->kb_scroll_snap_tension_h += processed_x;
+            data->kb_scroll_snap_tension_v += processed_y;
+            
+            // 水平テンション判定
+            if (abs(data->kb_scroll_snap_tension_h) >= CONFIG_PMW3610_KB_SCROLLSNAP_TENSION_THRESHOLD) {
+                wheel_h = (data->kb_scroll_snap_tension_h > 0) ? 
+                          PMW3610_SCROLL_X_NEGATIVE : PMW3610_SCROLL_X_POSITIVE;
+                data->kb_scroll_snap_tension_h = 0;
             }
             
-            // 現在、どの方向のスクロールが優勢かをチェック
-            bool vertical_dominant = false;
-            bool horizontal_dominant = false;
-            
-            // 現在の累積値から優勢方向を判断
-            if (abs(data->scroll_delta_y) >= abs(data->scroll_delta_x)) {
-                vertical_dominant = true;
-            } else {
-                horizontal_dominant = true;
+            // 垂直テンション判定
+            if (abs(data->kb_scroll_snap_tension_v) >= CONFIG_PMW3610_KB_SCROLLSNAP_TENSION_THRESHOLD) {
+                wheel_v = (data->kb_scroll_snap_tension_v > 0) ? 
+                         PMW3610_SCROLL_Y_NEGATIVE : PMW3610_SCROLL_Y_POSITIVE;
+                data->kb_scroll_snap_tension_v = 0;
             }
             
-            // 自然なスクロール体験のための斜め移動処理
-            if (vertical_dominant && abs(data->scroll_delta_y) > CONFIG_PMW3610_SCROLL_TICK / 4) {
-                // 垂直方向が優勢な場合、水平成分も垂直方向に加算
-                if (abs(scroll_x) > 0) {
-                    // 水平成分は垂直スクロール値として扱う（斜め移動の総合的な効果として）
-                    data->scroll_delta_y += abs(scroll_x) * (data->scroll_delta_y >= 0 ? 1 : -1);
-                    scroll_x = 0; // 水平方向の入力は垂直方向に転用したため、リセット
-                }
-            } else if (horizontal_dominant && abs(data->scroll_delta_x) > CONFIG_PMW3610_SCROLL_TICK / 4) {
-                // 水平方向が優勢な場合、垂直成分も水平方向に加算
-                if (abs(scroll_y) > 0) {
-                    // 垂直成分は水平スクロール値として扱う
-                    data->scroll_delta_x += abs(scroll_y) * (data->scroll_delta_x >= 0 ? 1 : -1);
-                    scroll_y = 0; // 垂直方向の入力は水平方向に転用したため、リセット
-                }
-            }
-            
-#ifdef CONFIG_PMW3610_VELOCITY_BASED_SCROLLING
-            // 速度ベースのスクロールモードでは、直接スクロールイベントを生成
-            // 閾値ベースの累積ではなく、速度に基づいてイベント生成
-            if (movement_size > 0) {
-                // まず主な方向を判断（優勢方向が判断しやすいよう、わずかに垂直方向を優先）
-                bool y_is_primary = abs(scroll_y) >= abs(scroll_x);
-                
-                if (y_is_primary && scroll_y != 0) {
-                    // Y方向のスクロール
-                    int16_t scroll_direction = scroll_y > 0 ? PMW3610_SCROLL_Y_NEGATIVE : PMW3610_SCROLL_Y_POSITIVE;
-                    
-                    // スクロール量に比例したイベント数を生成
-                    // より自然でスムーズなスクロールを実現するために
-                    // 速度に直接比例する形でイベント数を決定
-                    
-                    // 基本スクロール速度を計算
-                    float scroll_y_abs = fabsf((float)scroll_y);
-                    int16_t scroll_events;
-                    
-                    // スクロール量をイベント数に変換 - トラックボールセンサー向けに調整
-                    // 閾値を非常に高く設定し、スケーリング係数を大幅に削減
-                    // これにより長時間回転させても段階的変化が緩やかになる
-                    
-                    // 連続動作回数に応じた調整を行う - ほぼすべての動きでは常に1イベント
-                    if (data->scroll_consecutive_movements < 100) {
-                        // 短〜長時間の動きでは常に1イベントに制限（閾値を極限まで引き上げ）
-                        scroll_events = 1;
-                    } else {
-                        // 極端に長い連続動作が続いた場合のみ、振幅に応じたスケーリングを適用
-                        // 全ての閾値を極限まで引き上げ
-                        if (scroll_y_abs <= 300.0f) {
-                            // 極限まで拡大した第一段階 - 常に1イベントのみ
-                            scroll_events = 1;
-                        } else if (scroll_y_abs <= 700.0f) {
-                            // やや速い動き - 事実上加速なしの微小係数
-                            scroll_events = (int16_t)(1.0f + (scroll_y_abs - 300.0f) * 0.0001f); 
-                        } else if (scroll_y_abs <= 1200.0f) {
-                            // 高速な動き - 加速はほぼ完全に無視できるレベル
-                            scroll_events = (int16_t)(1.0f + (scroll_y_abs - 700.0f) * 0.00005f);
-                        } else {
-                            // 非常に高速な動き - 事実上頭打ち
-                            scroll_events = (int16_t)(1.0f + (scroll_y_abs - 1200.0f) * 0.000025f);
-                        }
-                        
-                        // 最後の追加保護：連続動作回数に応じたイベント制限
-                        // 極端に長時間の連続動作でのみ複数イベントを許可
-                        if (scroll_events > 1 && data->scroll_consecutive_movements < 150) {
-                            // 連続動作回数が150未満では常に1イベントに制限
-                            scroll_events = 1;
-                        }
-                    }
-                    
-                    // 最低1つは生成（小さな動きでも反応するように）
-                    scroll_events = scroll_events > 0 ? scroll_events : 1;
-                    
-                    // 多すぎる場合は制限 - 最大値をさらに制限
-                    scroll_events = scroll_events > 2 ? 2 : scroll_events;
-                    
-                    // スクロールイベントを送信
-                    for (int i = 0; i < scroll_events; i++) {
-                        input_report_rel(dev, INPUT_REL_WHEEL, scroll_direction, true, K_FOREVER);
-                    }
-                    
-                    // X方向のデルタをリセット
-                    data->scroll_delta_x = 0;
-                } else if (!y_is_primary && scroll_x != 0) {
-                    // X方向のスクロール
-                    int16_t scroll_direction = scroll_x > 0 ? PMW3610_SCROLL_X_NEGATIVE : PMW3610_SCROLL_X_POSITIVE;
-                    
-                    // 同様に速度に比例したイベント数を生成
-                    float scroll_x_abs = fabsf((float)scroll_x);
-                    int16_t scroll_events;
-                    
-                    // スクロール量をイベント数に変換 - トラックボールセンサー向けに調整
-                    // 閾値を非常に高く設定し、スケーリング係数を大幅に削減
-                    // これにより長時間回転させても段階的変化が緩やかになる
-                    
-                    // 連続動作回数に応じた調整を行う - ほぼすべての動きでは常に1イベント
-                    if (data->scroll_consecutive_movements < 100) {
-                        // 短〜長時間の動きでは常に1イベントに制限（閾値を極限まで引き上げ）
-                        scroll_events = 1;
-                    } else {
-                        // 極端に長い連続動作が続いた場合のみ、振幅に応じたスケーリングを適用
-                        // 全ての閾値を極限まで引き上げ
-                        if (scroll_x_abs <= 300.0f) {
-                            // 極限まで拡大した第一段階 - 常に1イベントのみ
-                            scroll_events = 1;
-                        } else if (scroll_x_abs <= 700.0f) {
-                            // やや速い動き - 事実上加速なしの微小係数
-                            scroll_events = (int16_t)(1.0f + (scroll_x_abs - 300.0f) * 0.0001f); 
-                        } else if (scroll_x_abs <= 1200.0f) {
-                            // 高速な動き - 加速はほぼ完全に無視できるレベル
-                            scroll_events = (int16_t)(1.0f + (scroll_x_abs - 700.0f) * 0.00005f);
-                        } else {
-                            // 非常に高速な動き - 事実上頭打ち
-                            scroll_events = (int16_t)(1.0f + (scroll_x_abs - 1200.0f) * 0.000025f);
-                        }
-                        
-                        // 最後の追加保護：連続動作回数に応じたイベント制限
-                        // 極端に長時間の連続動作でのみ複数イベントを許可
-                        if (scroll_events > 1 && data->scroll_consecutive_movements < 150) {
-                            // 連続動作回数が150未満では常に1イベントに制限
-                            scroll_events = 1;
-                        }
-                    }
-                    
-                    // 最低1つは生成
-                    scroll_events = scroll_events > 0 ? scroll_events : 1;
-                    
-                    // 多すぎる場合は制限 - 最大値をさらに制限
-                    scroll_events = scroll_events > 2 ? 2 : scroll_events;
-                    
-                    // スクロールイベントを送信
-                    for (int i = 0; i < scroll_events; i++) {
-                        input_report_rel(dev, INPUT_REL_HWHEEL, scroll_direction, true, K_FOREVER);
-                    }
-                    
-                    // Y方向のデルタをリセット
-                    data->scroll_delta_y = 0;
-                }
+            // 一定時間動きがなければテンションをリセット
+            if (TIMER_DIFF_32(curr_time, data->kb_scroll_snap_last) >= CONFIG_PMW3610_KB_SCROLLSNAP_RESET_TIMER) {
+                data->kb_scroll_snap_tension_h = 0;
+                data->kb_scroll_snap_tension_v = 0;
             }
 #else
-            // 従来の閾値ベースのスクロール（累積値が閾値を超えたらイベント生成）
-            // 処理後のスクロール値を累積
-            data->scroll_delta_x += scroll_x;
-            data->scroll_delta_y += scroll_y;
-            
-            // Generate scroll events when threshold is exceeded
-            if (abs(data->scroll_delta_y) > CONFIG_PMW3610_SCROLL_TICK) {
-                // Calculate number of scroll events to generate
-                int16_t scroll_events = abs(data->scroll_delta_y) / CONFIG_PMW3610_SCROLL_TICK;
-                int16_t scroll_direction = data->scroll_delta_y > 0 ? PMW3610_SCROLL_Y_NEGATIVE : PMW3610_SCROLL_Y_POSITIVE;
-                
-                // Send multiple scroll events if needed
-                for (int i = 0; i < scroll_events; i++) {
-                    input_report_rel(dev, INPUT_REL_WHEEL, scroll_direction, true, K_FOREVER);
-                }
-                
-                // Keep remainder for next time
-                data->scroll_delta_y %= CONFIG_PMW3610_SCROLL_TICK;
-                data->scroll_delta_x = 0; // Reset horizontal scrolling after vertical scroll
-            } else if (abs(data->scroll_delta_x) > CONFIG_PMW3610_SCROLL_TICK) {
-                // Calculate number of scroll events to generate
-                int16_t scroll_events = abs(data->scroll_delta_x) / CONFIG_PMW3610_SCROLL_TICK;
-                int16_t scroll_direction = data->scroll_delta_x > 0 ? PMW3610_SCROLL_X_NEGATIVE : PMW3610_SCROLL_X_POSITIVE;
-                
-                // Send multiple scroll events if needed
-                for (int i = 0; i < scroll_events; i++) {
-                    input_report_rel(dev, INPUT_REL_HWHEEL, scroll_direction, true, K_FOREVER);
-                }
-                
-                // Keep remainder for next time
-                data->scroll_delta_x %= CONFIG_PMW3610_SCROLL_TICK;
-                data->scroll_delta_y = 0; // Reset vertical scrolling after horizontal scroll
-            }
+            // スナップなしの場合は直接スクロール値を設定
+            wheel_h = processed_x ? 
+                     ((processed_x > 0) ? PMW3610_SCROLL_X_NEGATIVE : PMW3610_SCROLL_X_POSITIVE) : 0;
+            wheel_v = processed_y ? 
+                     ((processed_y > 0) ? PMW3610_SCROLL_Y_NEGATIVE : PMW3610_SCROLL_Y_POSITIVE) : 0;
 #endif
+            
+            // レポート送信（垂直優先）
+            if (wheel_v != 0) {
+                input_report_rel(dev, INPUT_REL_WHEEL, wheel_v, true, K_FOREVER);
+            } else if (wheel_h != 0) {
+                input_report_rel(dev, INPUT_REL_HWHEEL, wheel_h, true, K_FOREVER);
+            }
         }
+#endif
     }
 
     return err;
@@ -1545,47 +936,14 @@ static int pmw3610_init(const struct device *dev) {
 
     // init smart algorithm flag;
     data->sw_smart_flag = false;
-    
-    // スクロール加速変数を初期化
-    data->scroll_last_movement_time = 0;
-    data->scroll_acceleration = 1.0f;
-    data->scroll_consecutive_movements = 0;
-    data->scroll_prev_movement_size = 0;
-    data->scroll_prev_movement_velocity = 0.0f;
-    
-    // スクロール補間変数を初期化
-    data->scroll_last_direction_x = 0;
-    data->scroll_last_direction_y = 0;
-    data->scroll_missed_detection_count = 0;
-    data->scroll_consistent_direction_count = 0;
-    data->scroll_last_real_movement_time = 0;
-    
-#ifdef CONFIG_PMW3610_VELOCITY_BASED_SCROLLING
-    // 速度履歴配列を初期化
-    for (int i = 0; i < VELOCITY_HISTORY_SIZE; i++) {
-        data->velocity_history[i] = 0.0f;
-    }
-    data->velocity_history_index = 0;
-#endif
-    
-    // MOVEモードの加速変数を初期化
-    data->move_acceleration = 1.0f;
-    data->move_consecutive_movements = 0;
-    data->move_last_movement_time = 0;
-    data->move_prev_movement_velocity = 0.0f;
 
-#ifdef CONFIG_PMW3610_SMOOTHING_FILTER
-    // 平滑化フィルター用の変数を初期化
-    data->prev_x = 0;
-    data->prev_y = 0;
-    data->current_smoothing_weight = CONFIG_PMW3610_SMOOTHING_WEIGHT;
-#endif
-
-#ifdef CONFIG_PMW3610_PROFILE_SWITCHING
-    // プロファイル状態を初期化
-    data->precision_profile_active = false;
-    data->speed_profile_active = false;
-    data->backup_cpi = CONFIG_PMW3610_CPI;
+#ifdef CONFIG_PMW3610_KEYBALL_SCROLL
+    // キーボール風スクロールの初期化
+    data->kb_scroll_div = 0; // 0 = デフォルト値を使用
+    data->kb_scroll_snap_tension_h = 0;
+    data->kb_scroll_snap_tension_v = 0;
+    data->kb_scroll_snap_last = 0;
+    data->kb_scroll_mode_changed = 0;
 #endif
 
     // init trigger handler work
@@ -1649,147 +1007,3 @@ static int pmw3610_init(const struct device *dev) {
                           CONFIG_SENSOR_INIT_PRIORITY, NULL);
 
 DT_INST_FOREACH_STATUS_OKAY(PMW3610_DEFINE)
-
-#ifdef CONFIG_PMW3610_PROFILE_SWITCHING
-/**
- * @brief 精密作業プロファイルを有効/無効化する関数
- * 
- * @param dev デバイス
- * @param enable 有効化するかどうか
- * @return int 成功時は0、エラー時は負の値
- */
-static int set_precision_profile(const struct device *dev, bool enable) {
-    struct pixart_data *data = dev->data;
-    int err = 0;
-
-    if (enable && !data->precision_profile_active) {
-        // 現在のCPI値をバックアップ
-        if (!data->speed_profile_active) {
-            data->backup_cpi = data->curr_cpi;
-        }
-
-        // 精密プロファイル用のCPI値に設定
-        err = set_cpi(dev, CONFIG_PMW3610_PRECISION_PROFILE_CPI);
-        if (err) {
-            LOG_ERR("Failed to set precision profile CPI");
-            return err;
-        }
-
-#ifdef CONFIG_PMW3610_SMOOTHING_FILTER
-        // 精密プロファイル用のスムージング値に変更
-        data->current_smoothing_weight = CONFIG_PMW3610_PRECISION_PROFILE_SMOOTHING;
-#endif
-
-        data->precision_profile_active = true;
-        data->speed_profile_active = false;
-        LOG_DBG("Precision profile activated");
-    } else if (!enable && data->precision_profile_active) {
-        // バックアップしたCPI値に戻す
-        err = set_cpi(dev, data->backup_cpi);
-        if (err) {
-            LOG_ERR("Failed to restore CPI setting");
-            return err;
-        }
-
-#ifdef CONFIG_PMW3610_SMOOTHING_FILTER
-        // 通常のスムージング値に戻す
-        data->current_smoothing_weight = CONFIG_PMW3610_SMOOTHING_WEIGHT;
-#endif
-
-        data->precision_profile_active = false;
-        LOG_DBG("Precision profile deactivated");
-    }
-
-    return err;
-}
-
-/**
- * @brief 高速移動プロファイルを有効/無効化する関数
- * 
- * @param dev デバイス
- * @param enable 有効化するかどうか
- * @return int 成功時は0、エラー時は負の値
- */
-static int set_speed_profile(const struct device *dev, bool enable) {
-    struct pixart_data *data = dev->data;
-    int err = 0;
-
-    if (enable && !data->speed_profile_active) {
-        // 現在のCPI値をバックアップ
-        if (!data->precision_profile_active) {
-            data->backup_cpi = data->curr_cpi;
-        }
-
-        // 高速プロファイル用のCPI値に設定
-        err = set_cpi(dev, CONFIG_PMW3610_SPEED_PROFILE_CPI);
-        if (err) {
-            LOG_ERR("Failed to set speed profile CPI");
-            return err;
-        }
-
-#ifdef CONFIG_PMW3610_SMOOTHING_FILTER
-        // 高速プロファイル用のスムージング値に変更
-        data->current_smoothing_weight = CONFIG_PMW3610_SPEED_PROFILE_SMOOTHING;
-#endif
-
-        data->speed_profile_active = true;
-        data->precision_profile_active = false;
-        LOG_DBG("Speed profile activated");
-    } else if (!enable && data->speed_profile_active) {
-        // バックアップしたCPI値に戻す
-        err = set_cpi(dev, data->backup_cpi);
-        if (err) {
-            LOG_ERR("Failed to restore CPI setting");
-            return err;
-        }
-
-#ifdef CONFIG_PMW3610_SMOOTHING_FILTER
-        // 通常のスムージング値に戻す
-        data->current_smoothing_weight = CONFIG_PMW3610_SMOOTHING_WEIGHT;
-#endif
-
-        data->speed_profile_active = false;
-        LOG_DBG("Speed profile deactivated");
-    }
-
-    return err;
-}
-
-/**
- * @brief 精密作業プロファイルを有効/無効化する公開API関数
- * 
- * ZMKのビヘイビアからこの関数を呼び出すことで、キーを押している間だけ精密プロファイルに切り替えられる
- * 
- * @param enable 有効化するかどうか
- * @return int 成功時は0、エラー時は負の値
- */
-int pmw3610_activate_precision_profile(bool enable) {
-    // PMW3610センサーのデバイスを取得
-    const struct device *dev = DEVICE_DT_GET(DT_INST(0, pixart_pmw3610));
-    
-    if (!device_is_ready(dev)) {
-        return -ENODEV;
-    }
-    
-    return set_precision_profile(dev, enable);
-}
-
-/**
- * @brief 高速移動プロファイルを有効/無効化する公開API関数
- * 
- * ZMKのビヘイビアからこの関数を呼び出すことで、キーを押している間だけ高速プロファイルに切り替えられる
- * 
- * @param enable 有効化するかどうか
- * @return int 成功時は0、エラー時は負の値
- */
-int pmw3610_activate_speed_profile(bool enable) {
-    // PMW3610センサーのデバイスを取得
-    const struct device *dev = DEVICE_DT_GET(DT_INST(0, pixart_pmw3610));
-    
-    if (!device_is_ready(dev)) {
-        return -ENODEV;
-    }
-    
-    return set_speed_profile(dev, enable);
-}
-#endif

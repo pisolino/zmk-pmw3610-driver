@@ -135,6 +135,12 @@ extern "C" {
 #define PMW3610_SCROLL_Y_POSITIVE 1
 #endif
 
+#ifdef CONFIG_PMW3610_KEYBALL_SCROLL
+// キーボール風スクロールの定数
+#define PMW3610_KB_SCROLL_DIV_MIN 1
+#define PMW3610_KB_SCROLL_DIV_MAX 7
+#endif
+
 #ifdef __cplusplus
 }
 #endif

@@ -105,6 +105,65 @@ config PMW3610_VELOCITY_BASED_SCROLLING
       for trackball devices. When disabled, traditional distance-based
       scrolling is used.
 
+menuconfig PMW3610_KEYBALL_SCROLL
+    bool "Enable Keyball-style scrolling mode"
+    default n
+    help
+      Implements a scrolling mode based on the Keyball implementation.
+      This provides smoother scrolling with features like scroll snap
+      and adjustable scroll speed.
+
+if PMW3610_KEYBALL_SCROLL
+
+config PMW3610_KB_SCROLL_DIV_DEFAULT
+    int "Default scroll divider for Keyball-style scrolling"
+    default 4
+    range 1 7
+    help
+      Default divider for scroll speed in Keyball scroll mode.
+      Higher values make scrolling less sensitive.
+      1 = 1/1 speed (fastest)
+      2 = 1/2 speed
+      3 = 1/4 speed
+      4 = 1/8 speed (default)
+      5 = 1/16 speed
+      6 = 1/32 speed
+      7 = 1/128 speed (slowest)
+
+config PMW3610_KB_SCROLLBALL_INHIBITOR
+    int "Inhibition time in ms after scroll mode change"
+    default 50
+    help
+      Time in milliseconds to ignore trackball movement after
+      changing to scroll mode. This prevents accidental scrolling
+      when switching modes.
+
+config PMW3610_KB_SCROLLSNAP_ENABLE
+    bool "Enable scroll snap feature"
+    default y
+    help
+      Enables scroll snapping feature that accumulates small movements
+      before triggering a scroll event. This makes scrolling smoother
+      and more deliberate.
+
+config PMW3610_KB_SCROLLSNAP_TENSION_THRESHOLD
+    int "Scroll snap tension threshold"
+    depends on PMW3610_KB_SCROLLSNAP_ENABLE
+    default 8
+    help
+      Amount of accumulated movement required before a scroll event is
+      triggered when scroll snap is enabled.
+
+config PMW3610_KB_SCROLLSNAP_RESET_TIMER
+    int "Scroll snap reset timer in ms"
+    depends on PMW3610_KB_SCROLLSNAP_ENABLE
+    default 300
+    help
+      Time in milliseconds after which accumulated scroll tension is reset
+      if no new scroll events are detected.
+
+endif # PMW3610_KEYBALL_SCROLL
+
 choice
     prompt "Select PMW3610's polling rate"
     default PMW3610_POLLING_RATE_250
