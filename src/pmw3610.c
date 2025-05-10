@@ -787,7 +787,43 @@ static int pmw3610_report_data(const struct device *dev) {
             // 従来のスクロールモード
             data->scroll_delta_x += x;
             data->scroll_delta_y += y;
-            if (abs(data->scroll_delta_y) > CONFIG_PMW3610_SCROLL_TICK) {
+            
+            // 斜め入力処理: 両方のスクロール値が閾値を越えそうな場合
+            if (abs(data->scroll_delta_y) > CONFIG_PMW3610_SCROLL_TICK && 
+                abs(data->scroll_delta_x) > CONFIG_PMW3610_SCROLL_TICK * 0.7f) {
+                // 優勢な方向を判定（絶対値の大きさで判断）
+                if (abs(data->scroll_delta_y) >= abs(data->scroll_delta_x)) {
+                    // 垂直方向が優勢
+                    // Y方向のスクロールを発生させ、X方向の蓄積をリセット
+                    int8_t wheel_v = data->scroll_delta_y > 0 ? PMW3610_SCROLL_Y_NEGATIVE : PMW3610_SCROLL_Y_POSITIVE;
+                    
+                    // 同じ方向の斜め入力の場合、スクロール効果を強化
+                    if ((data->scroll_delta_y > 0 && data->scroll_delta_x > 0) || 
+                        (data->scroll_delta_y < 0 && data->scroll_delta_x < 0)) {
+                        wheel_v *= 2;  // 同方向の場合は効果を倍増
+                    }
+                    
+                    input_report_rel(dev, INPUT_REL_WHEEL, wheel_v, true, K_FOREVER);
+                    data->scroll_delta_x = 0;
+                    data->scroll_delta_y = 0;
+                } else {
+                    // 水平方向が優勢
+                    // X方向のスクロールを発生させ、Y方向の蓄積をリセット
+                    int8_t wheel_h = data->scroll_delta_x > 0 ? PMW3610_SCROLL_X_NEGATIVE : PMW3610_SCROLL_X_POSITIVE;
+                    
+                    // 同じ方向の斜め入力の場合、スクロール効果を強化
+                    if ((data->scroll_delta_x > 0 && data->scroll_delta_y > 0) || 
+                        (data->scroll_delta_x < 0 && data->scroll_delta_y < 0)) {
+                        wheel_h *= 2;  // 同方向の場合は効果を倍増
+                    }
+                    
+                    input_report_rel(dev, INPUT_REL_HWHEEL, wheel_h, true, K_FOREVER);
+                    data->scroll_delta_x = 0;
+                    data->scroll_delta_y = 0;
+                }
+            } 
+            // 通常の単一方向スクロール処理
+            else if (abs(data->scroll_delta_y) > CONFIG_PMW3610_SCROLL_TICK) {
                 input_report_rel(dev, INPUT_REL_WHEEL,
                                  data->scroll_delta_y > 0 ? PMW3610_SCROLL_Y_NEGATIVE : PMW3610_SCROLL_Y_POSITIVE,
                                  true, K_FOREVER);
@@ -859,12 +895,73 @@ static int pmw3610_report_data(const struct device *dev) {
                      ((processed_y > 0) ? PMW3610_SCROLL_Y_NEGATIVE : PMW3610_SCROLL_Y_POSITIVE) : 0;
 #endif
             
-            // レポート送信（垂直優先）
-            if (wheel_v != 0) {
+            // 斜め入力処理（優勢な方向にもう片方の成分も加算）
+#ifdef CONFIG_PMW3610_KB_SCROLLSNAP_ENABLE
+            // スナップ機能が有効な場合、テンション値で処理
+            if (wheel_v != 0 && wheel_h != 0) {
+                // 両方向にテンションがたまっている場合（＝斜め入力）
+                if (abs(data->kb_scroll_snap_tension_v) >= abs(data->kb_scroll_snap_tension_h)) {
+                    // 垂直方向が優勢または同等の場合
+                    // 現在のテンション比率に基づいて効果を強める（垂直成分に水平成分を加算）
+                    int16_t enhanced_v = wheel_v;
+                    if (wheel_v == PMW3610_SCROLL_Y_NEGATIVE && wheel_h == PMW3610_SCROLL_X_NEGATIVE) {
+                        enhanced_v = PMW3610_SCROLL_Y_NEGATIVE * 2;  // 同じ方向なら強化
+                    } else if (wheel_v == PMW3610_SCROLL_Y_POSITIVE && wheel_h == PMW3610_SCROLL_X_POSITIVE) {
+                        enhanced_v = PMW3610_SCROLL_Y_POSITIVE * 2;  // 同じ方向なら強化
+                    }
+                    input_report_rel(dev, INPUT_REL_WHEEL, enhanced_v, true, K_FOREVER);
+                    // 水平方向のテンションをリセット（垂直にマージしたため）
+                    data->kb_scroll_snap_tension_h = 0;
+                } else {
+                    // 水平方向が優勢な場合
+                    // 現在のテンション比率に基づいて効果を強める（水平成分に垂直成分を加算）
+                    int16_t enhanced_h = wheel_h;
+                    if (wheel_h == PMW3610_SCROLL_X_NEGATIVE && wheel_v == PMW3610_SCROLL_Y_NEGATIVE) {
+                        enhanced_h = PMW3610_SCROLL_X_NEGATIVE * 2;  // 同じ方向なら強化
+                    } else if (wheel_h == PMW3610_SCROLL_X_POSITIVE && wheel_v == PMW3610_SCROLL_Y_POSITIVE) {
+                        enhanced_h = PMW3610_SCROLL_X_POSITIVE * 2;  // 同じ方向なら強化
+                    }
+                    input_report_rel(dev, INPUT_REL_HWHEEL, enhanced_h, true, K_FOREVER);
+                    // 垂直方向のテンションをリセット（水平にマージしたため）
+                    data->kb_scroll_snap_tension_v = 0;
+                }
+            } else if (wheel_v != 0) {
+                // 垂直方向のみの入力
                 input_report_rel(dev, INPUT_REL_WHEEL, wheel_v, true, K_FOREVER);
             } else if (wheel_h != 0) {
+                // 水平方向のみの入力
                 input_report_rel(dev, INPUT_REL_HWHEEL, wheel_h, true, K_FOREVER);
             }
+#else
+            // スナップ機能が無効の場合、単純に優勢な方向を選択
+            if (wheel_v != 0 && wheel_h != 0) {
+                // 両方向に動きがある場合（＝斜め入力）
+                // 絶対値が大きい方向を優先
+                if (abs(processed_y) >= abs(processed_x)) {
+                    // 垂直方向優先、ただし斜め入力の効果を強める
+                    int16_t enhanced_v = wheel_v;
+                    if ((processed_y > 0 && processed_x > 0) || (processed_y < 0 && processed_x < 0)) {
+                        // 同じ方向なら強化
+                        enhanced_v = wheel_v * 2;
+                    }
+                    input_report_rel(dev, INPUT_REL_WHEEL, enhanced_v, true, K_FOREVER);
+                } else {
+                    // 水平方向優先、ただし斜め入力の効果を強める
+                    int16_t enhanced_h = wheel_h;
+                    if ((processed_x > 0 && processed_y > 0) || (processed_x < 0 && processed_y < 0)) {
+                        // 同じ方向なら強化
+                        enhanced_h = wheel_h * 2;
+                    }
+                    input_report_rel(dev, INPUT_REL_HWHEEL, enhanced_h, true, K_FOREVER);
+                }
+            } else if (wheel_v != 0) {
+                // 垂直方向のみの入力
+                input_report_rel(dev, INPUT_REL_WHEEL, wheel_v, true, K_FOREVER);
+            } else if (wheel_h != 0) {
+                // 水平方向のみの入力
+                input_report_rel(dev, INPUT_REL_HWHEEL, wheel_h, true, K_FOREVER);
+            }
+#endif
         }
 #endif
     }
