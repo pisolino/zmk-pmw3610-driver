@@ -790,22 +790,27 @@ static int pmw3610_report_data(const struct device *dev) {
             // 従来のスクロールモード
             data->scroll_delta_x += x;
             data->scroll_delta_y += y;
-            
+
+            // スクロール中はAuto Mouse Layerのタイマーをリフレッシュする
+            if (automouse_triggered) {
+                k_timer_start(&automouse_layer_timer, K_MSEC(CONFIG_PMW3610_AUTOMOUSE_TIMEOUT_MS), K_NO_WAIT);
+            }
+
             // 斜め入力処理: 両方のスクロール値が閾値を越えそうな場合
-            if (abs(data->scroll_delta_y) > CONFIG_PMW3610_SCROLL_TICK && 
+            if (abs(data->scroll_delta_y) > CONFIG_PMW3610_SCROLL_TICK &&
                 abs(data->scroll_delta_x) > CONFIG_PMW3610_SCROLL_TICK * 0.7f) {
                 // 垂直方向をより優先するための係数を適用（浮動小数点精度問題を回避）
                 if (abs(data->scroll_delta_y) * CONFIG_PMW3610_VERTICAL_BIAS_FACTOR > abs(data->scroll_delta_x) * 100) {
                     // 垂直方向が明確に優勢
                     // Y方向のスクロールを発生させ、X方向の蓄積をリセット
                     int8_t wheel_v = data->scroll_delta_y > 0 ? PMW3610_SCROLL_Y_NEGATIVE : PMW3610_SCROLL_Y_POSITIVE;
-                    
+
                     // 同じ方向の斜め入力の場合、スクロール効果を強化
-                    if ((data->scroll_delta_y > 0 && data->scroll_delta_x > 0) || 
+                    if ((data->scroll_delta_y > 0 && data->scroll_delta_x > 0) ||
                         (data->scroll_delta_y < 0 && data->scroll_delta_x < 0)) {
                         wheel_v *= 2;  // 同方向の場合は効果を倍増
                     }
-                    
+
                     input_report_rel(dev, INPUT_REL_WHEEL, wheel_v, true, K_FOREVER);
                     data->scroll_delta_x = 0;
                     data->scroll_delta_y = 0;
@@ -813,18 +818,18 @@ static int pmw3610_report_data(const struct device *dev) {
                     // 水平方向が優勢
                     // X方向のスクロールを発生させ、Y方向の蓄積をリセット
                     int8_t wheel_h = data->scroll_delta_x > 0 ? PMW3610_SCROLL_X_NEGATIVE : PMW3610_SCROLL_X_POSITIVE;
-                    
+
                     // 同じ方向の斜め入力の場合、スクロール効果を強化
-                    if ((data->scroll_delta_x > 0 && data->scroll_delta_y > 0) || 
+                    if ((data->scroll_delta_x > 0 && data->scroll_delta_y > 0) ||
                         (data->scroll_delta_x < 0 && data->scroll_delta_y < 0)) {
                         wheel_h *= 2;  // 同方向の場合は効果を倍増
                     }
-                    
+
                     input_report_rel(dev, INPUT_REL_HWHEEL, wheel_h, true, K_FOREVER);
                     data->scroll_delta_x = 0;
                     data->scroll_delta_y = 0;
                 }
-            } 
+            }
             // 通常の単一方向スクロール処理
             else if (abs(data->scroll_delta_y) > CONFIG_PMW3610_SCROLL_TICK) {
                 input_report_rel(dev, INPUT_REL_WHEEL,
@@ -847,6 +852,11 @@ static int pmw3610_report_data(const struct device *dev) {
             int64_t curr_time = k_uptime_get();
             if (TIMER_DIFF_32(curr_time, data->kb_scroll_mode_changed) < CONFIG_PMW3610_KB_SCROLLBALL_INHIBITOR) {
                 return err;
+            }
+
+            // スクロール中はAuto Mouse Layerのタイマーをリフレッシュする
+            if (automouse_triggered) {
+                k_timer_start(&automouse_layer_timer, K_MSEC(CONFIG_PMW3610_AUTOMOUSE_TIMEOUT_MS), K_NO_WAIT);
             }
 
             // スクロール除数の適用（1/2^(除数-1)）
