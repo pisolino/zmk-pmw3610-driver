@@ -627,6 +627,7 @@ static int pmw3610_report_data(const struct device *dev) {
             data->kb_scroll_snap_tension_h = 0;
             data->kb_scroll_snap_tension_v = 0;
             data->kb_scroll_snap_last = k_uptime_get();
+            data->kb_scroll_tension_boost = false;
         }
         dividor = 1; // スクロール除数は後で適用
         break;
@@ -874,39 +875,51 @@ static int pmw3610_report_data(const struct device *dev) {
                 if (data->kb_scroll_snap_tension_h != 0) {
                     // 方向を保持しながら値を小さくする（符号を維持）
                     data->kb_scroll_snap_tension_h = (data->kb_scroll_snap_tension_h > 0) ? 
-                                                    CONFIG_PMW3610_KB_SCROLLSNAP_TENSION_THRESHOLD / 2 : 
-                                                    -CONFIG_PMW3610_KB_SCROLLSNAP_TENSION_THRESHOLD / 2;
+                                                    CONFIG_PMW3610_KB_SCROLLSNAP_TENSION_THRESHOLD * 3 / 4 : 
+                                                    -CONFIG_PMW3610_KB_SCROLLSNAP_TENSION_THRESHOLD * 3 / 4;
                 }
                 if (data->kb_scroll_snap_tension_v != 0) {
                     // 方向を保持しながら値を小さくする（符号を維持）
                     data->kb_scroll_snap_tension_v = (data->kb_scroll_snap_tension_v > 0) ? 
-                                                    CONFIG_PMW3610_KB_SCROLLSNAP_TENSION_THRESHOLD / 2 : 
-                                                    -CONFIG_PMW3610_KB_SCROLLSNAP_TENSION_THRESHOLD / 2;
+                                                    CONFIG_PMW3610_KB_SCROLLSNAP_TENSION_THRESHOLD * 3 / 4 : 
+                                                    -CONFIG_PMW3610_KB_SCROLLSNAP_TENSION_THRESHOLD * 3 / 4;
                 }
+                
+                // 静止状態後の最初の動きの閾値を下げるフラグを設定
+                data->kb_scroll_tension_boost = true;
             }
             
             // テンション蓄積ロジック
             data->kb_scroll_snap_tension_h += processed_x;
             data->kb_scroll_snap_tension_v += processed_y;
             
+            // テンション閾値の設定（静止状態後の最初の動きは閾値を下げる）
+            int tension_threshold = data->kb_scroll_tension_boost ? 
+                                   CONFIG_PMW3610_KB_SCROLLSNAP_TENSION_THRESHOLD / 2 : // 通常より低い閾値
+                                   CONFIG_PMW3610_KB_SCROLLSNAP_TENSION_THRESHOLD;      // 通常閾値
+            
             // 水平テンション判定
-            if (abs(data->kb_scroll_snap_tension_h) >= CONFIG_PMW3610_KB_SCROLLSNAP_TENSION_THRESHOLD) {
+            if (abs(data->kb_scroll_snap_tension_h) >= tension_threshold) {
                 wheel_h = (data->kb_scroll_snap_tension_h > 0) ? 
                           PMW3610_SCROLL_X_NEGATIVE : PMW3610_SCROLL_X_POSITIVE;
                 // テンションを完全にリセットせず、同じ方向に少し残す（方向維持）
                 data->kb_scroll_snap_tension_h = (data->kb_scroll_snap_tension_h > 0) ? 
                                                 CONFIG_PMW3610_KB_SCROLLSNAP_TENSION_THRESHOLD / 4 : 
                                                 -CONFIG_PMW3610_KB_SCROLLSNAP_TENSION_THRESHOLD / 4;
+                // スクロールが発生したらブーストモードを解除
+                data->kb_scroll_tension_boost = false;
             }
             
             // 垂直テンション判定
-            if (abs(data->kb_scroll_snap_tension_v) >= CONFIG_PMW3610_KB_SCROLLSNAP_TENSION_THRESHOLD) {
+            if (abs(data->kb_scroll_snap_tension_v) >= tension_threshold) {
                 wheel_v = (data->kb_scroll_snap_tension_v > 0) ? 
                          PMW3610_SCROLL_Y_NEGATIVE : PMW3610_SCROLL_Y_POSITIVE;
                 // テンションを完全にリセットせず、同じ方向に少し残す（方向維持）
                 data->kb_scroll_snap_tension_v = (data->kb_scroll_snap_tension_v > 0) ? 
                                                 CONFIG_PMW3610_KB_SCROLLSNAP_TENSION_THRESHOLD / 4 : 
                                                 -CONFIG_PMW3610_KB_SCROLLSNAP_TENSION_THRESHOLD / 4;
+                // スクロールが発生したらブーストモードを解除
+                data->kb_scroll_tension_boost = false;
             }
             
             // テンション値の上限チェック - 値が極端に大きくなることを防止
@@ -1072,6 +1085,7 @@ static int pmw3610_init(const struct device *dev) {
     data->kb_scroll_snap_tension_v = 0;
     data->kb_scroll_snap_last = 0;
     data->kb_scroll_mode_changed = 0;
+    data->kb_scroll_tension_boost = false;
 #endif
 
     // init trigger handler work

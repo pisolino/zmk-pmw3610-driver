@@ -56,6 +56,7 @@ struct pixart_data {
     int32_t kb_scroll_snap_tension_h;    // 水平スクロールの蓄積テンション
     int32_t kb_scroll_snap_tension_v;    // 垂直スクロールの蓄積テンション
     int64_t kb_scroll_snap_last;         // 最後のスクロールスナップ時間
+    bool kb_scroll_tension_boost;        // 静止状態後のテンション閾値を下げるフラグ
 #endif
     
     // 速度ベースのスクロールのための履歴配列
