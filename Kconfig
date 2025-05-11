@@ -153,6 +153,14 @@ config PMW3610_KB_SCROLLSNAP_TENSION_THRESHOLD
     help
       Amount of accumulated movement required before a scroll event is
       triggered when scroll snap is enabled.
+      
+config PMW3610_VERTICAL_BIAS_FACTOR
+    int "Vertical scrolling bias factor in percent"
+    default 80
+    help
+      Bias factor to favor vertical scrolling over horizontal. A value of 80 means
+      that vertical movements only need to be 0.8x as strong as horizontal to be considered
+      dominant. Lower values make vertical scrolling more likely in diagonal movements.
 
 config PMW3610_KB_SCROLLSNAP_RESET_TIMER
     int "Scroll snap reset timer in ms"

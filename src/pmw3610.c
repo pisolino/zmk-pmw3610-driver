@@ -791,9 +791,9 @@ static int pmw3610_report_data(const struct device *dev) {
             // 斜め入力処理: 両方のスクロール値が閾値を越えそうな場合
             if (abs(data->scroll_delta_y) > CONFIG_PMW3610_SCROLL_TICK && 
                 abs(data->scroll_delta_x) > CONFIG_PMW3610_SCROLL_TICK * 0.7f) {
-                // 優勢な方向を判定（絶対値の大きさで判断）
-                if (abs(data->scroll_delta_y) >= abs(data->scroll_delta_x)) {
-                    // 垂直方向が優勢
+                // 垂直方向をより優先するための係数を適用
+                if (abs(data->scroll_delta_y) * (CONFIG_PMW3610_VERTICAL_BIAS_FACTOR / 100.0f) > abs(data->scroll_delta_x)) {
+                    // 垂直方向が明確に優勢
                     // Y方向のスクロールを発生させ、X方向の蓄積をリセット
                     int8_t wheel_v = data->scroll_delta_y > 0 ? PMW3610_SCROLL_Y_NEGATIVE : PMW3610_SCROLL_Y_POSITIVE;
                     
@@ -900,8 +900,9 @@ static int pmw3610_report_data(const struct device *dev) {
             // スナップ機能が有効な場合、テンション値で処理
             if (wheel_v != 0 && wheel_h != 0) {
                 // 両方向にテンションがたまっている場合（＝斜め入力）
-                if (abs(data->kb_scroll_snap_tension_v) >= abs(data->kb_scroll_snap_tension_h)) {
-                    // 垂直方向が優勢または同等の場合
+                // 垂直方向をより優先するための係数を適用
+                if (abs(data->kb_scroll_snap_tension_v) * (CONFIG_PMW3610_VERTICAL_BIAS_FACTOR / 100.0f) > abs(data->kb_scroll_snap_tension_h)) {
+                    // 垂直方向が明確に優勢な場合
                     // 現在のテンション比率に基づいて効果を強める（垂直成分に水平成分を加算）
                     int16_t enhanced_v = wheel_v;
                     if (wheel_v == PMW3610_SCROLL_Y_NEGATIVE && wheel_h == PMW3610_SCROLL_X_NEGATIVE) {
@@ -936,9 +937,9 @@ static int pmw3610_report_data(const struct device *dev) {
             // スナップ機能が無効の場合、単純に優勢な方向を選択
             if (wheel_v != 0 && wheel_h != 0) {
                 // 両方向に動きがある場合（＝斜め入力）
-                // 絶対値が大きい方向を優先
-                if (abs(processed_y) >= abs(processed_x)) {
-                    // 垂直方向優先、ただし斜め入力の効果を強める
+                // 垂直方向をより優先するための係数を適用
+                if (abs(processed_y) * (CONFIG_PMW3610_VERTICAL_BIAS_FACTOR / 100.0f) > abs(processed_x)) {
+                    // 垂直方向が明確に優勢な場合、ただし斜め入力の効果を強める
                     int16_t enhanced_v = wheel_v;
                     if ((processed_y > 0 && processed_x > 0) || (processed_y < 0 && processed_x < 0)) {
                         // 同じ方向なら強化
