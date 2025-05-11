@@ -867,10 +867,22 @@ static int pmw3610_report_data(const struct device *dev) {
             int64_t previous_time = data->kb_scroll_snap_last;
             data->kb_scroll_snap_last = curr_time;
             
-            // 長時間経過後の再開ならテンションをリセット（タイマーが異常に古い場合）
+            // 長時間の非アクティブ後に方向を維持しながらテンションの一部をリセット
             if (TIMER_DIFF_32(curr_time, previous_time) >= 1000) { // 1秒以上経過している場合
-                data->kb_scroll_snap_tension_h = 0;
-                data->kb_scroll_snap_tension_v = 0;
+                // テンションを完全にリセットせず、方向を維持しながら初期値を設定
+                // これにより、再開時に同じ方向へのスクロールがすぐに反応する
+                if (data->kb_scroll_snap_tension_h != 0) {
+                    // 方向を保持しながら値を小さくする（符号を維持）
+                    data->kb_scroll_snap_tension_h = (data->kb_scroll_snap_tension_h > 0) ? 
+                                                    CONFIG_PMW3610_KB_SCROLLSNAP_TENSION_THRESHOLD / 2 : 
+                                                    -CONFIG_PMW3610_KB_SCROLLSNAP_TENSION_THRESHOLD / 2;
+                }
+                if (data->kb_scroll_snap_tension_v != 0) {
+                    // 方向を保持しながら値を小さくする（符号を維持）
+                    data->kb_scroll_snap_tension_v = (data->kb_scroll_snap_tension_v > 0) ? 
+                                                    CONFIG_PMW3610_KB_SCROLLSNAP_TENSION_THRESHOLD / 2 : 
+                                                    -CONFIG_PMW3610_KB_SCROLLSNAP_TENSION_THRESHOLD / 2;
+                }
             }
             
             // テンション蓄積ロジック
@@ -881,29 +893,29 @@ static int pmw3610_report_data(const struct device *dev) {
             if (abs(data->kb_scroll_snap_tension_h) >= CONFIG_PMW3610_KB_SCROLLSNAP_TENSION_THRESHOLD) {
                 wheel_h = (data->kb_scroll_snap_tension_h > 0) ? 
                           PMW3610_SCROLL_X_NEGATIVE : PMW3610_SCROLL_X_POSITIVE;
-                data->kb_scroll_snap_tension_h = 0;
+                // テンションを完全にリセットせず、同じ方向に少し残す（方向維持）
+                data->kb_scroll_snap_tension_h = (data->kb_scroll_snap_tension_h > 0) ? 
+                                                CONFIG_PMW3610_KB_SCROLLSNAP_TENSION_THRESHOLD / 4 : 
+                                                -CONFIG_PMW3610_KB_SCROLLSNAP_TENSION_THRESHOLD / 4;
             }
             
             // 垂直テンション判定
             if (abs(data->kb_scroll_snap_tension_v) >= CONFIG_PMW3610_KB_SCROLLSNAP_TENSION_THRESHOLD) {
                 wheel_v = (data->kb_scroll_snap_tension_v > 0) ? 
                          PMW3610_SCROLL_Y_NEGATIVE : PMW3610_SCROLL_Y_POSITIVE;
-                data->kb_scroll_snap_tension_v = 0;
+                // テンションを完全にリセットせず、同じ方向に少し残す（方向維持）
+                data->kb_scroll_snap_tension_v = (data->kb_scroll_snap_tension_v > 0) ? 
+                                                CONFIG_PMW3610_KB_SCROLLSNAP_TENSION_THRESHOLD / 4 : 
+                                                -CONFIG_PMW3610_KB_SCROLLSNAP_TENSION_THRESHOLD / 4;
             }
             
-            
             // テンション値の上限チェック - 値が極端に大きくなることを防止
-            // かつ小さすぎる場合は完全にゼロにして蓄積の偏りを防止
             if (abs(data->kb_scroll_snap_tension_h) > 10000) {
                 data->kb_scroll_snap_tension_h = (data->kb_scroll_snap_tension_h > 0) ? 10000 : -10000;
-            } else if (abs(data->kb_scroll_snap_tension_h) < 1) {
-                data->kb_scroll_snap_tension_h = 0; // 微小な値は完全にゼロに
             }
             
             if (abs(data->kb_scroll_snap_tension_v) > 10000) {
                 data->kb_scroll_snap_tension_v = (data->kb_scroll_snap_tension_v > 0) ? 10000 : -10000;
-            } else if (abs(data->kb_scroll_snap_tension_v) < 1) {
-                data->kb_scroll_snap_tension_v = 0; // 微小な値は完全にゼロに
             }
 #else
             // スナップなしの場合は直接スクロール値を設定
