@@ -622,9 +622,11 @@ static int pmw3610_report_data(const struct device *dev) {
     case SCROLL_KB:
         set_cpi_if_needed(dev, CONFIG_PMW3610_CPI);
         if (input_mode_changed) {
+            // モード変更時に全ての状態をクリア
             data->kb_scroll_mode_changed = k_uptime_get();
             data->kb_scroll_snap_tension_h = 0;
             data->kb_scroll_snap_tension_v = 0;
+            data->kb_scroll_snap_last = k_uptime_get();
         }
         dividor = 1; // スクロール除数は後で適用
         break;
@@ -791,8 +793,8 @@ static int pmw3610_report_data(const struct device *dev) {
             // 斜め入力処理: 両方のスクロール値が閾値を越えそうな場合
             if (abs(data->scroll_delta_y) > CONFIG_PMW3610_SCROLL_TICK && 
                 abs(data->scroll_delta_x) > CONFIG_PMW3610_SCROLL_TICK * 0.7f) {
-                // 垂直方向をより優先するための係数を適用
-                if (abs(data->scroll_delta_y) * (CONFIG_PMW3610_VERTICAL_BIAS_FACTOR / 100.0f) > abs(data->scroll_delta_x)) {
+                // 垂直方向をより優先するための係数を適用（浮動小数点精度問題を回避）
+                if (abs(data->scroll_delta_y) * CONFIG_PMW3610_VERTICAL_BIAS_FACTOR > abs(data->scroll_delta_x) * 100) {
                     // 垂直方向が明確に優勢
                     // Y方向のスクロールを発生させ、X方向の蓄積をリセット
                     int8_t wheel_v = data->scroll_delta_y > 0 ? PMW3610_SCROLL_Y_NEGATIVE : PMW3610_SCROLL_Y_POSITIVE;
@@ -862,7 +864,14 @@ static int pmw3610_report_data(const struct device *dev) {
 
 #ifdef CONFIG_PMW3610_KB_SCROLLSNAP_ENABLE
             // スクロールスナップ機能
+            int64_t previous_time = data->kb_scroll_snap_last;
             data->kb_scroll_snap_last = curr_time;
+            
+            // 長時間経過後の再開ならテンションをリセット（タイマーが異常に古い場合）
+            if (TIMER_DIFF_32(curr_time, previous_time) >= 1000) { // 1秒以上経過している場合
+                data->kb_scroll_snap_tension_h = 0;
+                data->kb_scroll_snap_tension_v = 0;
+            }
             
             // テンション蓄積ロジック
             data->kb_scroll_snap_tension_h += processed_x;
@@ -882,10 +891,19 @@ static int pmw3610_report_data(const struct device *dev) {
                 data->kb_scroll_snap_tension_v = 0;
             }
             
-            // 一定時間動きがなければテンションをリセット
-            if (TIMER_DIFF_32(curr_time, data->kb_scroll_snap_last) >= CONFIG_PMW3610_KB_SCROLLSNAP_RESET_TIMER) {
-                data->kb_scroll_snap_tension_h = 0;
-                data->kb_scroll_snap_tension_v = 0;
+            
+            // テンション値の上限チェック - 値が極端に大きくなることを防止
+            // かつ小さすぎる場合は完全にゼロにして蓄積の偏りを防止
+            if (abs(data->kb_scroll_snap_tension_h) > 10000) {
+                data->kb_scroll_snap_tension_h = (data->kb_scroll_snap_tension_h > 0) ? 10000 : -10000;
+            } else if (abs(data->kb_scroll_snap_tension_h) < 1) {
+                data->kb_scroll_snap_tension_h = 0; // 微小な値は完全にゼロに
+            }
+            
+            if (abs(data->kb_scroll_snap_tension_v) > 10000) {
+                data->kb_scroll_snap_tension_v = (data->kb_scroll_snap_tension_v > 0) ? 10000 : -10000;
+            } else if (abs(data->kb_scroll_snap_tension_v) < 1) {
+                data->kb_scroll_snap_tension_v = 0; // 微小な値は完全にゼロに
             }
 #else
             // スナップなしの場合は直接スクロール値を設定
@@ -900,8 +918,8 @@ static int pmw3610_report_data(const struct device *dev) {
             // スナップ機能が有効な場合、テンション値で処理
             if (wheel_v != 0 && wheel_h != 0) {
                 // 両方向にテンションがたまっている場合（＝斜め入力）
-                // 垂直方向をより優先するための係数を適用
-                if (abs(data->kb_scroll_snap_tension_v) * (CONFIG_PMW3610_VERTICAL_BIAS_FACTOR / 100.0f) > abs(data->kb_scroll_snap_tension_h)) {
+                // 垂直方向をより優先するための係数を適用（浮動小数点精度問題を回避）
+                if (abs(data->kb_scroll_snap_tension_v) * CONFIG_PMW3610_VERTICAL_BIAS_FACTOR > abs(data->kb_scroll_snap_tension_h) * 100) {
                     // 垂直方向が明確に優勢な場合
                     // 現在のテンション比率に基づいて効果を強める（垂直成分に水平成分を加算）
                     int16_t enhanced_v = wheel_v;
@@ -911,8 +929,8 @@ static int pmw3610_report_data(const struct device *dev) {
                         enhanced_v = PMW3610_SCROLL_Y_POSITIVE * 2;  // 同じ方向なら強化
                     }
                     input_report_rel(dev, INPUT_REL_WHEEL, enhanced_v, true, K_FOREVER);
-                    // 水平方向のテンションをリセット（垂直にマージしたため）
-                    data->kb_scroll_snap_tension_h = 0;
+                    // 水平方向のテンションを減らす（完全に消さずに残す）
+                    data->kb_scroll_snap_tension_h = data->kb_scroll_snap_tension_h / 2;
                 } else {
                     // 水平方向が優勢な場合
                     // 現在のテンション比率に基づいて効果を強める（水平成分に垂直成分を加算）
@@ -923,8 +941,8 @@ static int pmw3610_report_data(const struct device *dev) {
                         enhanced_h = PMW3610_SCROLL_X_POSITIVE * 2;  // 同じ方向なら強化
                     }
                     input_report_rel(dev, INPUT_REL_HWHEEL, enhanced_h, true, K_FOREVER);
-                    // 垂直方向のテンションをリセット（水平にマージしたため）
-                    data->kb_scroll_snap_tension_v = 0;
+                    // 垂直方向のテンションを減らす（完全に消さずに残す）
+                    data->kb_scroll_snap_tension_v = data->kb_scroll_snap_tension_v / 2;
                 }
             } else if (wheel_v != 0) {
                 // 垂直方向のみの入力
@@ -937,8 +955,8 @@ static int pmw3610_report_data(const struct device *dev) {
             // スナップ機能が無効の場合、単純に優勢な方向を選択
             if (wheel_v != 0 && wheel_h != 0) {
                 // 両方向に動きがある場合（＝斜め入力）
-                // 垂直方向をより優先するための係数を適用
-                if (abs(processed_y) * (CONFIG_PMW3610_VERTICAL_BIAS_FACTOR / 100.0f) > abs(processed_x)) {
+                // 垂直方向をより優先するための係数を適用（浮動小数点精度問題を回避）
+                if (abs(processed_y) * CONFIG_PMW3610_VERTICAL_BIAS_FACTOR > abs(processed_x) * 100) {
                     // 垂直方向が明確に優勢な場合、ただし斜め入力の効果を強める
                     int16_t enhanced_v = wheel_v;
                     if ((processed_y > 0 && processed_x > 0) || (processed_y < 0 && processed_x < 0)) {
